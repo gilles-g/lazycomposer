@@ -1,0 +1,72 @@
+{
+    "content-hash": "abc123",
+    "packages": [
+        {
+            "name": "symfony/framework-bundle",
+            "version": "v7.0.4",
+            "description": "Provides a tight integration between Symfony components and the Symfony full-stack framework",
+            "type": "symfony-bundle",
+            "license": ["MIT"],
+            "homepage": "https://symfony.com",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/symfony/framework-bundle.git",
+                "reference": "abc123"
+            }
+        },
+        {
+            "name": "doctrine/orm",
+            "version": "3.0.0",
+            "description": "Object-Relational-Mapper for PHP",
+            "type": "library",
+            "license": ["MIT"],
+            "homepage": "https://www.doctrine-project.org",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/doctrine/orm.git",
+                "reference": "def456"
+            }
+        },
+        {
+            "name": "twig/twig",
+            "version": "v3.8.0",
+            "description": "Twig, the flexible, fast, and secure template language for PHP",
+            "type": "library",
+            "license": ["BSD-3-Clause"],
+            "homepage": "https://twig.symfony.com",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/twigphp/Twig.git",
+                "reference": "ghi789"
+            }
+        }
+    ],
+    "packages-dev": [
+        {
+            "name": "phpunit/phpunit",
+            "version": "11.0.0",
+            "description": "The PHP Unit Testing framework.",
+            "type": "library",
+            "license": ["BSD-3-Clause"],
+            "homepage": "https://phpunit.de/",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/sebastianbergmann/phpunit.git",
+                "reference": "jkl012"
+            }
+        },
+        {
+            "name": "phpstan/phpstan",
+            "version": "1.10.50",
+            "description": "PHPStan - PHP Static Analysis Tool",
+            "type": "library",
+            "license": ["MIT"],
+            "homepage": "https://phpstan.org",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/phpstan/phpstan.git",
+                "reference": "mno345"
+            }
+        }
+    ]
+}
