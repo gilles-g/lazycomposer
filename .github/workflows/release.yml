@@ -52,6 +52,20 @@ jobs:
           name: lazycomposer-${{ matrix.target }}
           path: lazycomposer-${{ matrix.target }}.tar.gz
 
+  publish:
+    name: Publish to crates.io
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish
+        run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
   release:
     name: Release
     needs: build

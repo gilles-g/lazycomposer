@@ -2,6 +2,13 @@
 name = "lazycomposer"
 version = "0.1.0"
 edition = "2021"
+description = "A TUI for managing PHP Composer dependencies, inspired by lazygit"
+license = "MIT"
+repository = "https://github.com/gilles-g/lazycomposer"
+homepage = "https://github.com/gilles-g/lazycomposer"
+readme = "README.md"
+keywords = ["composer", "php", "tui", "terminal", "dependencies"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 ratatui = "0.29"
