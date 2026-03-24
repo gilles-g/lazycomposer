@@ -5,3 +5,4 @@ pub mod layout;
 pub mod messages;
 pub mod panels;
 pub mod style;
+pub mod text;

@@ -1011,10 +1011,11 @@ fn render_show_detail(
 
     // Description
     if !show.description.is_empty() {
-        lines.push(show_field(
+        lines.extend(crate::ui::text::wrap_field(
             "Description:",
             &show.description,
             Style::default().fg(theme::COLOR_TEXT),
+            inner.width,
         ));
     }
 

@@ -7,6 +7,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
 use crate::composer::{AuditResult, OutdatedPackage, Package, PackageStatus};
 use crate::ui::style::{styles, theme};
+use crate::ui::text::wrap_field;
 
 /// PackagesPanel shows the list of installed packages, split into require and require-dev.
 pub struct PackagesPanel {
@@ -20,6 +21,8 @@ pub struct PackagesPanel {
     pub height: u16,
     filtering: bool,
     filter_text: String,
+    prod_scroll: usize,
+    dev_scroll: usize,
 }
 
 impl Default for PackagesPanel {
@@ -41,6 +44,8 @@ impl PackagesPanel {
             height: 0,
             filtering: false,
             filter_text: String::new(),
+            prod_scroll: 0,
+            dev_scroll: 0,
         }
     }
 
@@ -178,16 +183,19 @@ impl PackagesPanel {
             return;
         }
 
-        let (items_len, cursor) = if self.focus_dev {
-            (self.dev_items.len(), &mut self.dev_cursor)
+        let (items_len, cursor, scroll) = if self.focus_dev {
+            (self.dev_items.len(), &mut self.dev_cursor, &mut self.dev_scroll)
         } else {
-            (self.prod_items.len(), &mut self.prod_cursor)
+            (self.prod_items.len(), &mut self.prod_cursor, &mut self.prod_scroll)
         };
 
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
                 if *cursor > 0 {
                     *cursor -= 1;
+                    if *cursor < *scroll {
+                        *scroll = *cursor;
+                    }
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
@@ -207,7 +215,7 @@ impl PackagesPanel {
     }
 
     /// Render the packages panel (two stacked sub-panels: require + require-dev)
-    pub fn render(&self, area: Rect, buf: &mut Buffer, focused: bool) {
+    pub fn render(&mut self, area: Rect, buf: &mut Buffer, focused: bool) {
         let half_h = area.height / 2;
         let prod_h = half_h;
         let dev_h = area.height.saturating_sub(prod_h);
@@ -233,10 +241,14 @@ impl PackagesPanel {
             .title(Span::styled(prod_title, styles::title_style()));
         let prod_inner = prod_block.inner(prod_area);
         prod_block.render(prod_area, buf);
+        let prod_items = self.prod_items.clone();
+        let prod_cursor = self.prod_cursor;
+        let focus_dev = self.focus_dev;
         self.render_list(
-            &self.prod_items,
-            self.prod_cursor,
-            !self.focus_dev,
+            &prod_items,
+            prod_cursor,
+            !focus_dev,
+            true,
             prod_inner,
             buf,
         );
@@ -253,29 +265,41 @@ impl PackagesPanel {
             .title(Span::styled(" require-dev ", styles::dev_style()));
         let dev_inner = dev_block.inner(dev_area);
         dev_block.render(dev_area, buf);
+        let dev_items = self.dev_items.clone();
+        let dev_cursor = self.dev_cursor;
         self.render_list(
-            &self.dev_items,
-            self.dev_cursor,
-            self.focus_dev,
+            &dev_items,
+            dev_cursor,
+            focus_dev,
+            false,
             dev_inner,
             buf,
         );
     }
 
     fn render_list(
-        &self,
+        &mut self,
         items: &[usize],
         cursor: usize,
         is_focused: bool,
+        is_prod: bool,
         area: Rect,
         buf: &mut Buffer,
     ) {
         let visible_height = area.height as usize;
-        let scroll = if cursor >= visible_height {
-            cursor - visible_height + 1
+        let scroll = if is_prod {
+            &mut self.prod_scroll
         } else {
-            0
+            &mut self.dev_scroll
         };
+        // Adjust scroll only when cursor goes outside the visible window
+        if visible_height > 0 && cursor >= *scroll + visible_height {
+            *scroll = cursor - visible_height + 1;
+        }
+        if cursor < *scroll {
+            *scroll = cursor;
+        }
+        let scroll = *scroll;
 
         for (i, &idx) in items.iter().enumerate().skip(scroll).take(visible_height) {
             let y = area.y + (i - scroll) as u16;
@@ -425,10 +449,11 @@ pub fn render_detail(
     }
 
     if !pkg.description.is_empty() {
-        lines.push(styled_field(
+        lines.extend(wrap_field(
             "Description:",
             &pkg.description,
             Style::default().fg(theme::COLOR_TEXT),
+            inner.width,
         ));
     }
     if !pkg.pkg_type.is_empty() {

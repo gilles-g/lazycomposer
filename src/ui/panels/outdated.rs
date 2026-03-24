@@ -7,11 +7,13 @@ use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
 use crate::composer::OutdatedPackage;
 use crate::ui::style::{styles, theme};
+use crate::ui::text::wrap_field;
 
 /// OutdatedPanel shows outdated packages in a color-coded list.
 pub struct OutdatedPanel {
     pub packages: Vec<OutdatedPackage>,
     cursor: usize,
+    scroll: usize,
     pub width: u16,
     pub height: u16,
 }
@@ -27,6 +29,7 @@ impl OutdatedPanel {
         OutdatedPanel {
             packages: vec![],
             cursor: 0,
+            scroll: 0,
             width: 0,
             height: 0,
         }
@@ -35,6 +38,7 @@ impl OutdatedPanel {
     pub fn set_outdated(&mut self, packages: Vec<OutdatedPackage>) {
         self.packages = packages;
         self.cursor = 0;
+        self.scroll = 0;
     }
 
     pub fn selected_package(&self) -> Option<&str> {
@@ -55,6 +59,9 @@ impl OutdatedPanel {
             KeyCode::Up | KeyCode::Char('k') => {
                 if self.cursor > 0 {
                     self.cursor -= 1;
+                    if self.cursor < self.scroll {
+                        self.scroll = self.cursor;
+                    }
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
@@ -67,7 +74,7 @@ impl OutdatedPanel {
     }
 
     /// Render the outdated panel with colors.
-    pub fn render(&self, area: Rect, buf: &mut Buffer, focused: bool) {
+    pub fn render(&mut self, area: Rect, buf: &mut Buffer, focused: bool) {
         let border_style = if focused {
             Style::default().fg(theme::COLOR_BORDER_FOCUS)
         } else {
@@ -90,11 +97,14 @@ impl OutdatedPanel {
         }
 
         let visible_height = inner.height as usize;
-        let scroll = if self.cursor >= visible_height {
-            self.cursor - visible_height + 1
-        } else {
-            0
-        };
+        // Adjust scroll only when cursor goes outside the visible window
+        if visible_height > 0 && self.cursor >= self.scroll + visible_height {
+            self.scroll = self.cursor - visible_height + 1;
+        }
+        if self.cursor < self.scroll {
+            self.scroll = self.cursor;
+        }
+        let scroll = self.scroll;
 
         for (i, pkg) in self
             .packages
@@ -219,10 +229,12 @@ pub fn render_outdated_detail(
     lines.push(Line::default());
 
     if !pkg.description.is_empty() {
-        lines.push(Line::from(vec![
-            Span::styled("Description:  ", styles::key_style()),
-            Span::raw(&pkg.description),
-        ]));
+        lines.extend(wrap_field(
+            "Description:",
+            &pkg.description,
+            Style::default().fg(theme::COLOR_TEXT),
+            inner.width,
+        ));
     }
     if !pkg.homepage.is_empty() {
         lines.push(Line::from(vec![

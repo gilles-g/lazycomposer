@@ -8,6 +8,10 @@
   A terminal user interface (TUI) for managing PHP Composer dependencies, inspired by <a href="https://github.com/jesseduffield/lazygit">lazygit</a>.
 </p>
 
+<p align="center">
+  <strong>Beta</strong> — This project is under active development. Expect rough edges and breaking changes.
+</p>
+
 Built with [ratatui](https://ratatui.rs) + [crossterm](https://github.com/crossterm-rs/crossterm).
 
 ![Rust](https://img.shields.io/badge/rust-stable-orange)
