@@ -184,9 +184,17 @@ impl PackagesPanel {
         }
 
         let (items_len, cursor, scroll) = if self.focus_dev {
-            (self.dev_items.len(), &mut self.dev_cursor, &mut self.dev_scroll)
+            (
+                self.dev_items.len(),
+                &mut self.dev_cursor,
+                &mut self.dev_scroll,
+            )
         } else {
-            (self.prod_items.len(), &mut self.prod_cursor, &mut self.prod_scroll)
+            (
+                self.prod_items.len(),
+                &mut self.prod_cursor,
+                &mut self.prod_scroll,
+            )
         };
 
         match key.code {
@@ -244,14 +252,7 @@ impl PackagesPanel {
         let prod_items = self.prod_items.clone();
         let prod_cursor = self.prod_cursor;
         let focus_dev = self.focus_dev;
-        self.render_list(
-            &prod_items,
-            prod_cursor,
-            !focus_dev,
-            true,
-            prod_inner,
-            buf,
-        );
+        self.render_list(&prod_items, prod_cursor, !focus_dev, true, prod_inner, buf);
 
         // Dev panel
         let dev_border_style = if focused && self.focus_dev {
@@ -267,14 +268,7 @@ impl PackagesPanel {
         dev_block.render(dev_area, buf);
         let dev_items = self.dev_items.clone();
         let dev_cursor = self.dev_cursor;
-        self.render_list(
-            &dev_items,
-            dev_cursor,
-            focus_dev,
-            false,
-            dev_inner,
-            buf,
-        );
+        self.render_list(&dev_items, dev_cursor, focus_dev, false, dev_inner, buf);
     }
 
     fn render_list(
