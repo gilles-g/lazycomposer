@@ -7,7 +7,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
 use crate::composer::{AuditResult, FrameworkInfo, OutdatedPackage, Package, PackageStatus};
 use crate::ui::style::{styles, theme};
-use crate::ui::text::wrap_field;
+
 
 /// PackagesPanel shows the list of installed packages, split into require and require-dev.
 pub struct PackagesPanel {
@@ -96,14 +96,20 @@ impl PackagesPanel {
         &mut self,
         outdated: Option<&[OutdatedPackage]>,
         audit: Option<&AuditResult>,
+        framework: Option<&FrameworkInfo>,
     ) {
         let mut outdated_names = std::collections::HashSet::new();
+        let mut restricted_names = std::collections::HashSet::new();
         let mut abandoned_names = std::collections::HashSet::new();
         let mut vulnerable_names = std::collections::HashSet::new();
 
         if let Some(outdated) = outdated {
             for o in outdated {
-                outdated_names.insert(o.name.clone());
+                if crate::composer::is_blocked_by_framework(&o.name, &o.version, &o.latest, framework) {
+                    restricted_names.insert(o.name.clone());
+                } else {
+                    outdated_names.insert(o.name.clone());
+                }
                 if o.abandoned.set {
                     abandoned_names.insert(o.name.clone());
                 }
@@ -128,11 +134,32 @@ impl PackagesPanel {
                 PackageStatus::Abandoned
             } else if outdated_names.contains(&pkg.name) {
                 PackageStatus::Outdated
+            } else if restricted_names.contains(&pkg.name) {
+                PackageStatus::Restricted
             } else {
                 PackageStatus::OK
             };
         }
 
+        self.rebuild_lists();
+    }
+
+    /// Resolves the best version within the framework constraint for a Restricted package.
+    /// If the best version is newer than the current version, promote to Outdated.
+    pub fn resolve_restricted(&mut self, name: &str, best_version: Option<String>) {
+        if let Some(pkg) = self.packages.iter_mut().find(|p| p.name == name) {
+            let is_newer = best_version.as_ref().is_some_and(|bv| {
+                let best = crate::composer::parser::parse_version(bv);
+                let current = crate::composer::parser::parse_version(&pkg.version);
+                matches!((best, current), (Some(b), Some(c)) if b > c)
+            });
+            pkg.restricted_latest = best_version;
+            if is_newer {
+                pkg.status = PackageStatus::Outdated;
+            } else {
+                pkg.status = PackageStatus::OK;
+            }
+        }
         self.rebuild_lists();
     }
 
@@ -362,172 +389,6 @@ impl PackagesPanel {
 }
 
 /// Render the detail panel for a package, optionally enriched with outdated info.
-pub fn render_detail(
-    pkg: Option<&Package>,
-    outdated: Option<&OutdatedPackage>,
-    framework: Option<&FrameworkInfo>,
-    area: Rect,
-    buf: &mut Buffer,
-    focused: bool,
-) {
-    let border_style = if focused {
-        Style::default().fg(theme::COLOR_BORDER_FOCUS)
-    } else {
-        Style::default().fg(theme::COLOR_BORDER)
-    };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_style);
-    let inner = block.inner(area);
-    block.render(area, buf);
-
-    let pkg = match pkg {
-        Some(p) => p,
-        None => {
-            let text = Paragraph::new(Span::styled("No package selected", styles::muted_style()));
-            text.render(inner, buf);
-            return;
-        }
-    };
-
-    let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::from(Span::styled(&pkg.name, styles::title_style())));
-    lines.push(Line::default());
-
-    if !pkg.version.is_empty() {
-        lines.push(styled_field(
-            "Version:",
-            &pkg.version,
-            styles::version_style(),
-        ));
-    }
-
-    if !pkg.constraint.is_empty() {
-        let bounds = crate::composer::explain_constraint(&pkg.constraint);
-        lines.push(Line::from(vec![
-            Span::styled("Constraint:", styles::key_style()),
-            Span::raw("  "),
-            Span::styled(&pkg.constraint, styles::version_style()),
-            Span::raw("  "),
-            Span::styled(format!("({bounds})"), styles::muted_style()),
-        ]));
-    }
-
-    // Outdated info: latest version and update type
-    if let Some(o) = outdated {
-        // Skip "update-possible" (major) if the framework constraint blocks it
-        let blocked =
-            is_major_blocked_by_framework(&pkg.name, &o.latest_status, &o.latest, framework);
-
-        if !blocked {
-            let status_color = theme::status_color(&o.latest_status);
-            let version_style = Style::default().fg(status_color);
-            lines.push(Line::from(vec![
-                Span::styled("Latest:", styles::key_style()),
-                Span::raw("  "),
-                Span::styled(&o.latest, version_style),
-            ]));
-            let status_label = match o.latest_status.as_str() {
-                "semver-safe-update" => "● Safe update (minor/patch)",
-                "update-possible" => "▲ Update possible (major)",
-                _ => &o.latest_status,
-            };
-            lines.push(Line::from(vec![
-                Span::styled("Update:", styles::key_style()),
-                Span::raw("  "),
-                Span::styled(status_label.to_string(), version_style),
-            ]));
-        }
-
-        if !o.warning.is_empty() {
-            lines.push(Line::from(vec![
-                Span::styled("⚠ ", styles::error_style()),
-                Span::styled(&o.warning, styles::error_style()),
-            ]));
-        }
-
-        if o.abandoned.set {
-            let replacement = if o.abandoned.value.is_empty() {
-                "no replacement"
-            } else {
-                &o.abandoned.value
-            };
-            lines.push(Line::from(vec![
-                Span::styled("⚑ Abandoned", styles::warning_style()),
-                Span::raw("  "),
-                Span::styled(format!("→ {replacement}"), styles::muted_style()),
-            ]));
-        }
-    }
-
-    if !pkg.description.is_empty() {
-        lines.extend(wrap_field(
-            "Description:",
-            &pkg.description,
-            Style::default().fg(theme::COLOR_TEXT),
-            inner.width,
-        ));
-    }
-    if !pkg.pkg_type.is_empty() {
-        lines.push(styled_field(
-            "Type:",
-            &pkg.pkg_type,
-            Style::default().fg(theme::COLOR_TEXT),
-        ));
-    }
-    if !pkg.license.is_empty() {
-        lines.push(styled_field(
-            "License:",
-            &pkg.license,
-            Style::default().fg(theme::COLOR_TEXT),
-        ));
-    }
-    if !pkg.homepage.is_empty() {
-        lines.push(styled_field(
-            "Homepage:",
-            &pkg.homepage,
-            Style::default().fg(theme::COLOR_INFO),
-        ));
-    }
-    if !pkg.source.url.is_empty() {
-        lines.push(styled_field(
-            "Source:",
-            &pkg.source.url,
-            Style::default().fg(theme::COLOR_INFO),
-        ));
-    }
-
-    let dev_span = if pkg.is_dev {
-        Span::styled("Yes", styles::dev_style())
-    } else {
-        Span::raw("No")
-    };
-    lines.push(Line::from(vec![
-        Span::styled("Dev:  ", styles::key_style()),
-        dev_span,
-    ]));
-
-    let status_span = match pkg.status {
-        PackageStatus::Vulnerable => Span::styled("Vulnerable", styles::package_vulnerable_style()),
-        PackageStatus::Abandoned => Span::styled("Abandoned", styles::package_abandoned_style()),
-        PackageStatus::Outdated => Span::styled("Outdated", styles::package_outdated_style()),
-        _ => Span::styled("OK", styles::package_ok_style()),
-    };
-    lines.push(Line::from(vec![
-        Span::styled("Status:  ", styles::key_style()),
-        status_span,
-    ]));
-
-    lines.push(Line::default());
-    lines.push(Line::from(Span::styled(
-        "u: update  d: remove",
-        styles::muted_style(),
-    )));
-
-    let paragraph = Paragraph::new(lines);
-    paragraph.render(inner, buf);
-}
-
 /// Render the framework info panel.
 pub fn render_framework_panel(framework: &FrameworkInfo, area: Rect, buf: &mut Buffer) {
     let border_style = Style::default().fg(theme::COLOR_BORDER);
@@ -596,24 +457,6 @@ pub fn framework_view(framework: &FrameworkInfo) -> String {
     b
 }
 
-/// Checks if a major upgrade is blocked by the framework constraint.
-fn is_major_blocked_by_framework(
-    pkg_name: &str,
-    latest_status: &str,
-    latest_version: &str,
-    framework: Option<&FrameworkInfo>,
-) -> bool {
-    if latest_status != "update-possible" {
-        return false;
-    }
-    if let Some(FrameworkInfo::Symfony(sf)) = framework {
-        if crate::composer::is_symfony_package(pkg_name) && !sf.require.is_empty() {
-            return !crate::composer::version_within_framework(latest_version, &sf.require);
-        }
-    }
-    false
-}
-
 fn styled_field<'a>(label: &'a str, value: &'a str, value_style: Style) -> Line<'a> {
     Line::from(vec![
         Span::styled(label, styles::key_style()),
@@ -622,60 +465,10 @@ fn styled_field<'a>(label: &'a str, value: &'a str, value_style: Style) -> Line<
     ])
 }
 
-/// String-based detail view (for tests).
-pub fn detail_view(pkg: Option<&Package>, _width: u16, _height: u16, _focused: bool) -> String {
-    match pkg {
-        None => "No package selected".to_string(),
-        Some(pkg) => {
-            let mut b = String::new();
-            b.push_str(&pkg.name);
-            b.push_str("\n\n");
-            if !pkg.version.is_empty() {
-                b.push_str(&format!("Version:  {}\n", pkg.version));
-            }
-            if !pkg.constraint.is_empty() {
-                let bounds = crate::composer::explain_constraint(&pkg.constraint);
-                b.push_str(&format!("Constraint:  {}  ({bounds})\n", pkg.constraint));
-            }
-            if !pkg.description.is_empty() {
-                b.push_str(&format!("Description:  {}\n", pkg.description));
-            }
-            if !pkg.pkg_type.is_empty() {
-                b.push_str(&format!("Type:  {}\n", pkg.pkg_type));
-            }
-            if !pkg.license.is_empty() {
-                b.push_str(&format!("License:  {}\n", pkg.license));
-            }
-            if !pkg.homepage.is_empty() {
-                b.push_str(&format!("Homepage:  {}\n", pkg.homepage));
-            }
-            if !pkg.source.url.is_empty() {
-                b.push_str(&format!("Source:  {}\n", pkg.source.url));
-            }
-            let dev_label = if pkg.is_dev { "Yes" } else { "No" };
-            b.push_str(&format!("Dev:  {dev_label}\n"));
-            let status_label = status_label(pkg.status);
-            b.push_str(&format!("Status:  {status_label}\n"));
-            b.push_str("\nu: update  d: remove");
-            b
-        }
-    }
-}
-
-#[allow(dead_code)]
-fn status_label(status: PackageStatus) -> &'static str {
-    match status {
-        PackageStatus::Vulnerable => "Vulnerable",
-        PackageStatus::Abandoned => "Abandoned",
-        PackageStatus::Outdated => "Outdated",
-        _ => "OK",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::composer::{Advisory, Source};
+    use crate::composer::Advisory;
 
     fn sample_packages() -> Vec<Package> {
         vec![
@@ -786,7 +579,7 @@ mod tests {
             latest_status: "semver-safe-update".to_string(),
             ..Default::default()
         }];
-        p.update_statuses(Some(&outdated), None);
+        p.update_statuses(Some(&outdated), None, None);
         for pkg in &p.packages {
             if pkg.name == "doctrine/orm" {
                 assert_eq!(pkg.status, PackageStatus::Outdated);
@@ -807,7 +600,7 @@ mod tests {
                 .into_iter()
                 .collect(),
         };
-        p.update_statuses(None, Some(&audit));
+        p.update_statuses(None, Some(&audit), None);
         for pkg in &p.packages {
             if pkg.name == "twig/twig" {
                 assert_eq!(pkg.status, PackageStatus::Abandoned);
@@ -832,7 +625,7 @@ mod tests {
             .collect(),
             abandoned: Default::default(),
         };
-        p.update_statuses(None, Some(&audit));
+        p.update_statuses(None, Some(&audit), None);
         for pkg in &p.packages {
             if pkg.name == "symfony/framework-bundle" {
                 assert_eq!(pkg.status, PackageStatus::Vulnerable);
@@ -863,7 +656,7 @@ mod tests {
             .collect(),
             abandoned: Default::default(),
         };
-        p.update_statuses(Some(&outdated), Some(&audit));
+        p.update_statuses(Some(&outdated), Some(&audit), None);
         for pkg in &p.packages {
             if pkg.name == "doctrine/orm" {
                 assert_eq!(pkg.status, PackageStatus::Vulnerable);
@@ -884,7 +677,7 @@ mod tests {
             },
             ..Default::default()
         }];
-        p.update_statuses(Some(&outdated), None);
+        p.update_statuses(Some(&outdated), None, None);
         for pkg in &p.packages {
             if pkg.name == "twig/twig" {
                 assert_eq!(pkg.status, PackageStatus::Abandoned);
@@ -896,9 +689,71 @@ mod tests {
         let mut p = PackagesPanel::new();
         p.set_size(80, 40);
         p.set_packages(sample_packages());
-        p.update_statuses(None, None);
+        p.update_statuses(None, None, None);
         for pkg in &p.packages {
             assert_eq!(pkg.status, PackageStatus::OK, "{}", pkg.name);
+        }
+    }
+    #[test]
+    fn update_statuses_framework_blocks_outdated() {
+        let mut p = PackagesPanel::new();
+        p.set_size(80, 40);
+        p.set_packages(sample_packages());
+        let framework = FrameworkInfo::Symfony(crate::composer::SymfonyExtra {
+            require: "7.0.*".to_string(),
+            allow_contrib: None,
+            docker: None,
+        });
+        // symfony/framework-bundle latest is 7.4.7 which is outside 7.0.*
+        let outdated = vec![
+            OutdatedPackage {
+                name: "symfony/framework-bundle".to_string(),
+                version: "v7.0.4".to_string(),
+                latest: "v7.4.7".to_string(),
+                latest_status: "semver-safe-update".to_string(),
+                ..Default::default()
+            },
+            OutdatedPackage {
+                name: "doctrine/orm".to_string(),
+                version: "3.0.0".to_string(),
+                latest: "3.1.0".to_string(),
+                latest_status: "semver-safe-update".to_string(),
+                ..Default::default()
+            },
+        ];
+        p.update_statuses(Some(&outdated), None, Some(&framework));
+        for pkg in &p.packages {
+            if pkg.name == "symfony/framework-bundle" {
+                assert_eq!(pkg.status, PackageStatus::Restricted, "symfony pkg should be Restricted when latest is outside framework constraint");
+            }
+            if pkg.name == "doctrine/orm" {
+                assert_eq!(pkg.status, PackageStatus::Outdated, "non-symfony pkg should still be outdated");
+            }
+        }
+    }
+    #[test]
+    fn update_statuses_framework_allows_outdated_within_constraint() {
+        let mut p = PackagesPanel::new();
+        p.set_size(80, 40);
+        p.set_packages(sample_packages());
+        let framework = FrameworkInfo::Symfony(crate::composer::SymfonyExtra {
+            require: "7.0.*".to_string(),
+            allow_contrib: None,
+            docker: None,
+        });
+        // latest 7.0.5 is within 7.0.* so the package IS outdated
+        let outdated = vec![OutdatedPackage {
+            name: "symfony/framework-bundle".to_string(),
+            version: "v7.0.4".to_string(),
+            latest: "v7.0.5".to_string(),
+            latest_status: "semver-safe-update".to_string(),
+            ..Default::default()
+        }];
+        p.update_statuses(Some(&outdated), None, Some(&framework));
+        for pkg in &p.packages {
+            if pkg.name == "symfony/framework-bundle" {
+                assert_eq!(pkg.status, PackageStatus::Outdated, "symfony pkg should be outdated when latest is within framework constraint");
+            }
         }
     }
     #[test]
@@ -930,45 +785,6 @@ mod tests {
         assert!(!p.is_filtering());
     }
     #[test]
-    fn detail_view_nil_package() {
-        assert!(!detail_view(None, 60, 30, false).is_empty());
-    }
-    #[test]
-    fn detail_view_nil_package_focused() {
-        assert!(!detail_view(None, 60, 30, true).is_empty());
-    }
-    #[test]
-    fn detail_view_with_package() {
-        let pkg = Package {
-            name: "vendor/pkg".to_string(),
-            version: "1.0.0".to_string(),
-            constraint: "^1.0".to_string(),
-            description: "A package".to_string(),
-            pkg_type: "library".to_string(),
-            license: "MIT".to_string(),
-            homepage: "https://example.com".to_string(),
-            source: Source {
-                url: "https://github.com/vendor/pkg".to_string(),
-                ..Default::default()
-            },
-            is_dev: false,
-            status: PackageStatus::OK,
-        };
-        let view = detail_view(Some(&pkg), 60, 30, true);
-        assert!(view.contains("Constraint:  ^1.0  (>=1.0.0, <2.0.0)"));
-    }
-    #[test]
-    fn detail_view_dev_package() {
-        let pkg = Package {
-            name: "phpunit/phpunit".to_string(),
-            version: "11.0.0".to_string(),
-            is_dev: true,
-            status: PackageStatus::Outdated,
-            ..Default::default()
-        };
-        assert!(!detail_view(Some(&pkg), 60, 30, false).is_empty());
-    }
-    #[test]
     fn framework_view_symfony() {
         let fw = FrameworkInfo::Symfony(crate::composer::SymfonyExtra {
             require: "7.0.*".to_string(),
@@ -993,26 +809,5 @@ mod tests {
         assert!(view.contains("6.4.*"));
         assert!(!view.contains("allow-contrib:"));
         assert!(!view.contains("docker:"));
-    }
-    #[test]
-    fn detail_view_no_framework_info() {
-        let pkg = Package {
-            name: "vendor/pkg".to_string(),
-            version: "1.0.0".to_string(),
-            ..Default::default()
-        };
-        let view = detail_view(Some(&pkg), 60, 30, true);
-        assert!(!view.contains("Symfony"));
-    }
-    #[test]
-    fn test_status_label() {
-        for s in [
-            PackageStatus::OK,
-            PackageStatus::Outdated,
-            PackageStatus::Abandoned,
-            PackageStatus::Vulnerable,
-        ] {
-            assert!(!status_label(s).is_empty());
-        }
     }
 }

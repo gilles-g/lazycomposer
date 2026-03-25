@@ -1,4 +1,5 @@
 pub mod audit;
+pub mod detail;
 pub mod outdated;
 pub mod output;
 pub mod packages;

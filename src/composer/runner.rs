@@ -122,6 +122,34 @@ impl Runner {
         })
     }
 
+    /// Runs `composer show <pkg> --all --format=json` and parses the result.
+    /// Returns all available versions (not just the installed one).
+    pub fn show_all(&self, dir: &str, pkg: &str) -> Result<ShowResult, String> {
+        log::debug!("running: composer show {pkg} --all --format=json in {dir}");
+        let result = self
+            .exec
+            .run(dir, &["show", pkg, "--all", "--format=json"])
+            .map_err(|e| format!("running composer show --all: {e}"))?;
+
+        log::debug!(
+            "composer show --all exit={} stdout={} bytes",
+            result.exit_code,
+            result.stdout.len()
+        );
+
+        if result.stdout.is_empty() {
+            return Err(format!("composer show --all {pkg}: no output"));
+        }
+
+        serde_json::from_slice(&result.stdout).map_err(|e| {
+            log::error!(
+                "composer show --all parse error: {e}\nraw output: {}",
+                security::sanitize_log_output(&String::from_utf8_lossy(&result.stdout))
+            );
+            format!("parsing show --all output: {e}")
+        })
+    }
+
     /// Runs `composer require <pkg>` with streaming output.
     pub fn require(&self, dir: &str, pkg: &str) -> Result<mpsc::Receiver<StreamLine>, String> {
         log::info!("running: composer require {pkg} in {dir}");
@@ -570,6 +598,26 @@ mod tests {
         assert_eq!(result.homepage, "");
         assert_eq!(result.path, "");
         assert_eq!(result.released, "");
+    }
+
+    #[test]
+    fn runner_show_all() {
+        let json = br#"{
+            "name": "symfony/console",
+            "versions": ["v7.4.7", "v7.4.6", "v7.0.5", "v7.0.4", "v6.4.0"]
+        }"#;
+
+        let runner = Runner::new(Box::new(mock_run(move |_, _| {
+            Ok(RunResult {
+                stdout: json.to_vec(),
+                stderr: vec![],
+                exit_code: 0,
+            })
+        })));
+
+        let result = runner.show_all("/test", "symfony/console").unwrap();
+        assert_eq!(result.name, "symfony/console");
+        assert_eq!(result.versions.len(), 5);
     }
 
     #[test]

@@ -26,6 +26,7 @@ pub const COLOR_STATUS_OK: Color = Color::Rgb(0x00, 0xCC, 0x00);
 pub const COLOR_STATUS_OUTDATED: Color = Color::Rgb(0xCC, 0xCC, 0x00);
 pub const COLOR_STATUS_ABANDONED: Color = Color::Rgb(0xCC, 0x00, 0x00);
 pub const COLOR_STATUS_VULNERABLE: Color = Color::Rgb(0xCC, 0x00, 0x00);
+pub const COLOR_STATUS_RESTRICTED: Color = Color::Rgb(0x00, 0xCC, 0xCC);
 
 /// Returns the appropriate color for an outdated status.
 pub fn status_color(status: &str) -> Color {

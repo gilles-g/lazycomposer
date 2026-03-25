@@ -93,6 +93,7 @@ pub enum PackageStatus {
     Outdated = 1,
     Abandoned = 2,
     Vulnerable = 3,
+    Restricted = 4,
 }
 
 /// Package represents a Composer dependency.
@@ -108,6 +109,7 @@ pub struct Package {
     pub source: Source,
     pub is_dev: bool,
     pub status: PackageStatus,
+    pub restricted_latest: Option<String>,
 }
 
 /// Source holds the source info of a package.
@@ -689,5 +691,6 @@ mod tests {
         assert_eq!(PackageStatus::Outdated as u8, 1);
         assert_eq!(PackageStatus::Abandoned as u8, 2);
         assert_eq!(PackageStatus::Vulnerable as u8, 3);
+        assert_eq!(PackageStatus::Restricted as u8, 4);
     }
 }

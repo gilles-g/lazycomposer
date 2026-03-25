@@ -35,6 +35,10 @@ enum BgMsg {
     AuditError(String),
     ShowLoaded(Box<composer::ShowResult>),
     ShowError(String),
+    RestrictedVersionLoaded {
+        name: String,
+        best_version: Option<String>,
+    },
     ComposerInfo {
         version: String,
         path: String,
@@ -85,6 +89,7 @@ pub struct App {
     loading_packages: bool,
     loading_outdated: bool,
     loading_audit: bool,
+    resolving_restricted: std::collections::HashSet<String>,
 }
 
 enum PendingAction {
@@ -131,6 +136,7 @@ impl App {
             loading_packages: false,
             loading_outdated: false,
             loading_audit: false,
+            resolving_restricted: std::collections::HashSet::new(),
         }
     }
 
@@ -215,7 +221,7 @@ impl App {
                     self.framework_info = framework;
                     self.packages.set_packages(packages);
                     self.packages
-                        .update_statuses(Some(&self.outdated_result), self.audit_result.as_ref());
+                        .update_statuses(Some(&self.outdated_result), self.audit_result.as_ref(), self.framework_info.as_ref());
                     // On reload (after an action), re-fetch outdated/audit if lock changed
                     if !self.lock_hash.is_empty() && lock_hash != self.lock_hash {
                         self.spawn_load_outdated();
@@ -235,7 +241,8 @@ impl App {
                     self.loading_outdated = false;
                     self.outdated_result = result.installed;
                     self.packages
-                        .update_statuses(Some(&self.outdated_result), self.audit_result.as_ref());
+                        .update_statuses(Some(&self.outdated_result), self.audit_result.as_ref(), self.framework_info.as_ref());
+                    self.spawn_resolve_all_restricted();
                     if !self.loading_packages && !self.loading_audit {
                         self.spinner.stop();
                     }
@@ -252,7 +259,7 @@ impl App {
                     self.audit.set_audit(Some(&result));
                     self.audit_result = Some(result);
                     self.packages
-                        .update_statuses(Some(&self.outdated_result), self.audit_result.as_ref());
+                        .update_statuses(Some(&self.outdated_result), self.audit_result.as_ref(), self.framework_info.as_ref());
                     if !self.loading_packages && !self.loading_outdated {
                         self.spinner.stop();
                     }
@@ -275,6 +282,10 @@ impl App {
                     self.loading_show = false;
                     self.err = Some(e);
                     self.spinner.stop();
+                }
+                BgMsg::RestrictedVersionLoaded { name, best_version } => {
+                    self.resolving_restricted.remove(&name);
+                    self.packages.resolve_restricted(&name, best_version);
                 }
                 BgMsg::ComposerInfo { version, path } => {
                     self.composer_info = format!("composer {version} ({path})");
@@ -598,8 +609,13 @@ impl App {
             .is_some_and(|sr| selected_name.is_some_and(|name| sr.name == name));
 
         if show_matches {
+            let pkg = self.packages.selected_package();
+            let outdated_info = pkg
+                .and_then(|p| self.outdated_result.iter().find(|o| o.name == p.name));
             render_show_detail(
                 self.show_result.as_ref().unwrap(),
+                pkg,
+                outdated_info,
                 detail_area,
                 f.buffer_mut(),
                 self.detail_focus,
@@ -612,10 +628,9 @@ impl App {
                         .packages
                         .selected_package()
                         .and_then(|pkg| self.outdated_result.iter().find(|o| o.name == pkg.name));
-                    panels::packages::render_detail(
+                    panels::detail::render_detail(
                         self.packages.selected_package(),
                         outdated_info,
-                        self.framework_info.as_ref(),
                         detail_area,
                         f.buffer_mut(),
                         false,
@@ -835,6 +850,49 @@ impl App {
         });
     }
 
+    fn spawn_resolve_all_restricted(&mut self) {
+        let constraint = match &self.framework_info {
+            Some(composer::FrameworkInfo::Symfony(sf)) if !sf.require.is_empty() => {
+                sf.require.clone()
+            }
+            _ => return,
+        };
+        let restricted_pkgs: Vec<String> = self
+            .packages
+            .packages
+            .iter()
+            .filter(|p| p.status == composer::PackageStatus::Restricted)
+            .map(|p| p.name.clone())
+            .collect();
+        for name in restricted_pkgs {
+            self.spawn_load_restricted_version(&name, &constraint);
+        }
+    }
+
+    fn spawn_load_restricted_version(&mut self, pkg_name: &str, constraint: &str) {
+        if self.resolving_restricted.contains(pkg_name) {
+            return;
+        }
+        self.resolving_restricted.insert(pkg_name.to_string());
+        let dir = self.dir.clone();
+        let runner = self.runner.clone();
+        let tx = self.bg_tx.clone();
+        let name = pkg_name.to_string();
+        let constraint = constraint.to_string();
+        thread::spawn(move || {
+            let best_version = runner
+                .show_all(&dir, &name)
+                .ok()
+                .and_then(|show| {
+                    composer::find_best_version_in_constraint(&show.versions, &constraint)
+                });
+            let _ = tx.send(BgMsg::RestrictedVersionLoaded {
+                name,
+                best_version,
+            });
+        });
+    }
+
     fn spawn_load_composer_info(&self) {
         let runner = self.runner.clone();
         let tx = self.bg_tx.clone();
@@ -1037,6 +1095,8 @@ fn major_version(version: &str) -> String {
 /// Renders enriched detail panel from `composer show` result.
 fn render_show_detail(
     show: &composer::ShowResult,
+    pkg: Option<&composer::Package>,
+    outdated: Option<&composer::OutdatedPackage>,
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
     focused: bool,
@@ -1066,6 +1126,65 @@ fn render_show_detail(
     // Version
     if let Some(v) = show.versions.first() {
         lines.push(show_field("Version:", v, styles::version_style()));
+    }
+
+    // Constraint (from Package)
+    if let Some(p) = pkg {
+        if !p.constraint.is_empty() {
+            let bounds = composer::explain_constraint(&p.constraint);
+            lines.push(Line::from(vec![
+                Span::styled("Constraint:", styles::key_style()),
+                Span::raw("  "),
+                Span::styled(&p.constraint, styles::version_style()),
+                Span::raw("  "),
+                Span::styled(format!("({bounds})"), styles::muted_style()),
+            ]));
+        }
+    }
+
+    // Outdated info (from outdated result)
+    if let Some(p) = pkg {
+        if let Some(o) = outdated {
+            if let Some(rv) = &p.restricted_latest {
+                if p.status != composer::PackageStatus::OK {
+                    lines.push(Line::from(vec![
+                        Span::styled("Latest:", styles::key_style()),
+                        Span::raw("  "),
+                        Span::styled(rv, styles::package_outdated_style()),
+                        Span::styled(" (within framework)", styles::muted_style()),
+                    ]));
+                }
+            } else if p.status == composer::PackageStatus::Restricted {
+                lines.push(Line::from(vec![
+                    Span::styled("Latest:", styles::key_style()),
+                    Span::raw("  "),
+                    Span::styled(&o.latest, styles::muted_style()),
+                    Span::styled(" (blocked by framework)", styles::muted_style()),
+                ]));
+            } else {
+                let status_color = theme::status_color(&o.latest_status);
+                let version_style = Style::default().fg(status_color);
+                lines.push(Line::from(vec![
+                    Span::styled("Latest:", styles::key_style()),
+                    Span::raw("  "),
+                    Span::styled(&o.latest, version_style),
+                ]));
+            }
+        }
+
+        // Status
+        let status_span = match p.status {
+            composer::PackageStatus::Vulnerable => Span::styled("Vulnerable", styles::package_vulnerable_style()),
+            composer::PackageStatus::Abandoned => Span::styled("Abandoned", styles::package_abandoned_style()),
+            composer::PackageStatus::Outdated => Span::styled("Outdated", styles::package_outdated_style()),
+            composer::PackageStatus::Restricted => Span::styled("Restricted", styles::package_restricted_style()),
+            _ => Span::styled("OK", styles::package_ok_style()),
+        };
+        lines.push(Line::from(vec![
+            Span::styled("Status:", styles::key_style()),
+            Span::raw("  "),
+            status_span,
+        ]));
     }
 
     // Latest tags (skip first which is already shown as Version)

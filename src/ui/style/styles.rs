@@ -78,12 +78,17 @@ pub fn package_vulnerable_style() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
+pub fn package_restricted_style() -> Style {
+    Style::default().fg(COLOR_STATUS_RESTRICTED)
+}
+
 /// Returns the appropriate style for a package status.
 pub fn package_status_style(status: PackageStatus) -> Style {
     match status {
         PackageStatus::Outdated => package_outdated_style(),
         PackageStatus::Abandoned => package_abandoned_style(),
         PackageStatus::Vulnerable => package_vulnerable_style(),
+        PackageStatus::Restricted => package_restricted_style(),
         _ => package_ok_style(),
     }
 }
@@ -99,6 +104,7 @@ mod tests {
             (PackageStatus::Outdated, package_outdated_style()),
             (PackageStatus::Abandoned, package_abandoned_style()),
             (PackageStatus::Vulnerable, package_vulnerable_style()),
+            (PackageStatus::Restricted, package_restricted_style()),
         ];
 
         for (status, expected) in tests {

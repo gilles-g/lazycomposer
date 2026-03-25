@@ -218,6 +218,45 @@ pub fn detect_framework(extra: &serde_json::Value) -> Option<FrameworkInfo> {
     None
 }
 
+/// Checks if a package's latest version is blocked by the framework constraint.
+/// Only applies to packages whose current version already follows the framework versioning
+/// (e.g. symfony/flex v2.4 is NOT constrained by extra.symfony.require "7.0.*").
+pub fn is_blocked_by_framework(
+    pkg_name: &str,
+    current_version: &str,
+    latest_version: &str,
+    framework: Option<&FrameworkInfo>,
+) -> bool {
+    if let Some(FrameworkInfo::Symfony(sf)) = framework {
+        if is_symfony_package(pkg_name) && !sf.require.is_empty() {
+            if !version_within_framework(current_version, &sf.require) {
+                return false;
+            }
+            return !version_within_framework(latest_version, &sf.require);
+        }
+    }
+    false
+}
+
+/// Finds the best (highest) version from a list that satisfies a constraint.
+/// Skips unparseable versions (e.g. dev-main). Returns None if no version matches.
+pub fn find_best_version_in_constraint(versions: &[String], constraint: &str) -> Option<String> {
+    let mut best: Option<(u32, u32, u32, String)> = None;
+    for v in versions {
+        let parsed = match parse_version(v) {
+            Some(p) => p,
+            None => continue,
+        };
+        if !version_satisfies_constraint(v, constraint) {
+            continue;
+        }
+        if best.as_ref().is_none_or(|(bm, bmin, bp, _)| parsed > (*bm, *bmin, *bp)) {
+            best = Some((parsed.0, parsed.1, parsed.2, v.clone()));
+        }
+    }
+    best.map(|(_, _, _, v)| v)
+}
+
 fn lock_package_to_package(lp: &LockPackage, is_dev: bool, constraint: &str) -> Package {
     let license = if lp.license.is_empty() {
         String::new()
@@ -236,6 +275,7 @@ fn lock_package_to_package(lp: &LockPackage, is_dev: bool, constraint: &str) -> 
         source: lp.source.clone(),
         is_dev,
         status: PackageStatus::default(),
+        restricted_latest: None,
     }
 }
 
@@ -716,5 +756,59 @@ mod tests {
     #[test]
     fn explain_unparseable() {
         assert_eq!(explain_constraint("dev-main"), "dev-main");
+    }
+
+    // --- find_best_version_in_constraint tests ---
+
+    #[test]
+    fn best_version_in_constraint() {
+        let versions = vec![
+            "v7.0.1".to_string(),
+            "v7.0.4".to_string(),
+            "v7.0.5".to_string(),
+            "v7.4.7".to_string(),
+        ];
+        assert_eq!(
+            find_best_version_in_constraint(&versions, "7.0.*"),
+            Some("v7.0.5".to_string())
+        );
+    }
+
+    #[test]
+    fn best_version_skips_dev() {
+        let versions = vec![
+            "dev-main".to_string(),
+            "v7.0.3".to_string(),
+            "v7.0.4".to_string(),
+        ];
+        assert_eq!(
+            find_best_version_in_constraint(&versions, "7.0.*"),
+            Some("v7.0.4".to_string())
+        );
+    }
+
+    #[test]
+    fn best_version_no_match() {
+        let versions = vec!["v8.0.0".to_string(), "v8.1.0".to_string()];
+        assert_eq!(find_best_version_in_constraint(&versions, "7.0.*"), None);
+    }
+
+    #[test]
+    fn best_version_empty() {
+        let versions: Vec<String> = vec![];
+        assert_eq!(find_best_version_in_constraint(&versions, "7.0.*"), None);
+    }
+
+    #[test]
+    fn best_version_with_caret() {
+        let versions = vec![
+            "v7.0.1".to_string(),
+            "v7.4.7".to_string(),
+            "v8.0.0".to_string(),
+        ];
+        assert_eq!(
+            find_best_version_in_constraint(&versions, "^7.0"),
+            Some("v7.4.7".to_string())
+        );
     }
 }
