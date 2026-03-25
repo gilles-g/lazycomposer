@@ -5,7 +5,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
-use crate::composer::{AuditResult, OutdatedPackage, Package, PackageStatus};
+use crate::composer::{AuditResult, FrameworkInfo, OutdatedPackage, Package, PackageStatus};
 use crate::ui::style::{styles, theme};
 use crate::ui::text::wrap_field;
 
@@ -365,6 +365,7 @@ impl PackagesPanel {
 pub fn render_detail(
     pkg: Option<&Package>,
     outdated: Option<&OutdatedPackage>,
+    framework: Option<&FrameworkInfo>,
     area: Rect,
     buf: &mut Buffer,
     focused: bool,
@@ -401,25 +402,42 @@ pub fn render_detail(
         ));
     }
 
+    if !pkg.constraint.is_empty() {
+        let bounds = crate::composer::explain_constraint(&pkg.constraint);
+        lines.push(Line::from(vec![
+            Span::styled("Constraint:", styles::key_style()),
+            Span::raw("  "),
+            Span::styled(&pkg.constraint, styles::version_style()),
+            Span::raw("  "),
+            Span::styled(format!("({bounds})"), styles::muted_style()),
+        ]));
+    }
+
     // Outdated info: latest version and update type
     if let Some(o) = outdated {
-        let status_color = theme::status_color(&o.latest_status);
-        let version_style = Style::default().fg(status_color);
-        lines.push(Line::from(vec![
-            Span::styled("Latest:", styles::key_style()),
-            Span::raw("  "),
-            Span::styled(&o.latest, version_style),
-        ]));
-        let status_label = match o.latest_status.as_str() {
-            "semver-safe-update" => "● Safe update (minor/patch)",
-            "update-possible" => "▲ Update possible (major)",
-            _ => &o.latest_status,
-        };
-        lines.push(Line::from(vec![
-            Span::styled("Update:", styles::key_style()),
-            Span::raw("  "),
-            Span::styled(status_label.to_string(), version_style),
-        ]));
+        // Skip "update-possible" (major) if the framework constraint blocks it
+        let blocked =
+            is_major_blocked_by_framework(&pkg.name, &o.latest_status, &o.latest, framework);
+
+        if !blocked {
+            let status_color = theme::status_color(&o.latest_status);
+            let version_style = Style::default().fg(status_color);
+            lines.push(Line::from(vec![
+                Span::styled("Latest:", styles::key_style()),
+                Span::raw("  "),
+                Span::styled(&o.latest, version_style),
+            ]));
+            let status_label = match o.latest_status.as_str() {
+                "semver-safe-update" => "● Safe update (minor/patch)",
+                "update-possible" => "▲ Update possible (major)",
+                _ => &o.latest_status,
+            };
+            lines.push(Line::from(vec![
+                Span::styled("Update:", styles::key_style()),
+                Span::raw("  "),
+                Span::styled(status_label.to_string(), version_style),
+            ]));
+        }
 
         if !o.warning.is_empty() {
             lines.push(Line::from(vec![
@@ -510,6 +528,92 @@ pub fn render_detail(
     paragraph.render(inner, buf);
 }
 
+/// Render the framework info panel.
+pub fn render_framework_panel(framework: &FrameworkInfo, area: Rect, buf: &mut Buffer) {
+    let border_style = Style::default().fg(theme::COLOR_BORDER);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style)
+        .title(Span::styled(" Framework ", styles::title_style()));
+    let inner = block.inner(area);
+    block.render(area, buf);
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    match framework {
+        FrameworkInfo::Symfony(sf) => {
+            lines.push(Line::from(Span::styled(
+                "Symfony",
+                Style::default()
+                    .fg(theme::COLOR_PRIMARY)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            if !sf.require.is_empty() {
+                lines.push(styled_field(
+                    "require:",
+                    &sf.require,
+                    Style::default().fg(theme::COLOR_TEXT),
+                ));
+            }
+            if let Some(contrib) = sf.allow_contrib {
+                lines.push(styled_field(
+                    "allow-contrib:",
+                    if contrib { "true" } else { "false" },
+                    Style::default().fg(theme::COLOR_TEXT),
+                ));
+            }
+            if let Some(docker) = sf.docker {
+                lines.push(styled_field(
+                    "docker:",
+                    if docker { "true" } else { "false" },
+                    Style::default().fg(theme::COLOR_TEXT),
+                ));
+            }
+        }
+    }
+
+    let paragraph = Paragraph::new(lines);
+    paragraph.render(inner, buf);
+}
+
+/// String-based framework panel view (for tests).
+pub fn framework_view(framework: &FrameworkInfo) -> String {
+    let mut b = String::new();
+    match framework {
+        FrameworkInfo::Symfony(sf) => {
+            b.push_str("Symfony\n");
+            if !sf.require.is_empty() {
+                b.push_str(&format!("require:  {}\n", sf.require));
+            }
+            if let Some(contrib) = sf.allow_contrib {
+                b.push_str(&format!("allow-contrib:  {contrib}\n"));
+            }
+            if let Some(docker) = sf.docker {
+                b.push_str(&format!("docker:  {docker}\n"));
+            }
+        }
+    }
+    b
+}
+
+/// Checks if a major upgrade is blocked by the framework constraint.
+fn is_major_blocked_by_framework(
+    pkg_name: &str,
+    latest_status: &str,
+    latest_version: &str,
+    framework: Option<&FrameworkInfo>,
+) -> bool {
+    if latest_status != "update-possible" {
+        return false;
+    }
+    if let Some(FrameworkInfo::Symfony(sf)) = framework {
+        if crate::composer::is_symfony_package(pkg_name) && !sf.require.is_empty() {
+            return !crate::composer::version_within_framework(latest_version, &sf.require);
+        }
+    }
+    false
+}
+
 fn styled_field<'a>(label: &'a str, value: &'a str, value_style: Style) -> Line<'a> {
     Line::from(vec![
         Span::styled(label, styles::key_style()),
@@ -528,6 +632,10 @@ pub fn detail_view(pkg: Option<&Package>, _width: u16, _height: u16, _focused: b
             b.push_str("\n\n");
             if !pkg.version.is_empty() {
                 b.push_str(&format!("Version:  {}\n", pkg.version));
+            }
+            if !pkg.constraint.is_empty() {
+                let bounds = crate::composer::explain_constraint(&pkg.constraint);
+                b.push_str(&format!("Constraint:  {}  ({bounds})\n", pkg.constraint));
             }
             if !pkg.description.is_empty() {
                 b.push_str(&format!("Description:  {}\n", pkg.description));
@@ -834,6 +942,7 @@ mod tests {
         let pkg = Package {
             name: "vendor/pkg".to_string(),
             version: "1.0.0".to_string(),
+            constraint: "^1.0".to_string(),
             description: "A package".to_string(),
             pkg_type: "library".to_string(),
             license: "MIT".to_string(),
@@ -845,7 +954,8 @@ mod tests {
             is_dev: false,
             status: PackageStatus::OK,
         };
-        assert!(!detail_view(Some(&pkg), 60, 30, true).is_empty());
+        let view = detail_view(Some(&pkg), 60, 30, true);
+        assert!(view.contains("Constraint:  ^1.0  (>=1.0.0, <2.0.0)"));
     }
     #[test]
     fn detail_view_dev_package() {
@@ -857,6 +967,42 @@ mod tests {
             ..Default::default()
         };
         assert!(!detail_view(Some(&pkg), 60, 30, false).is_empty());
+    }
+    #[test]
+    fn framework_view_symfony() {
+        let fw = FrameworkInfo::Symfony(crate::composer::SymfonyExtra {
+            require: "7.0.*".to_string(),
+            allow_contrib: Some(false),
+            docker: Some(true),
+        });
+        let view = framework_view(&fw);
+        assert!(view.contains("Symfony"));
+        assert!(view.contains("7.0.*"));
+        assert!(view.contains("allow-contrib:"));
+        assert!(view.contains("docker:"));
+    }
+    #[test]
+    fn framework_view_symfony_partial() {
+        let fw = FrameworkInfo::Symfony(crate::composer::SymfonyExtra {
+            require: "6.4.*".to_string(),
+            allow_contrib: None,
+            docker: None,
+        });
+        let view = framework_view(&fw);
+        assert!(view.contains("Symfony"));
+        assert!(view.contains("6.4.*"));
+        assert!(!view.contains("allow-contrib:"));
+        assert!(!view.contains("docker:"));
+    }
+    #[test]
+    fn detail_view_no_framework_info() {
+        let pkg = Package {
+            name: "vendor/pkg".to_string(),
+            version: "1.0.0".to_string(),
+            ..Default::default()
+        };
+        let view = detail_view(Some(&pkg), 60, 30, true);
+        assert!(!view.contains("Symfony"));
     }
     #[test]
     fn test_status_label() {

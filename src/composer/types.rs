@@ -100,6 +100,7 @@ pub enum PackageStatus {
 pub struct Package {
     pub name: String,
     pub version: String,
+    pub constraint: String,
     pub description: String,
     pub pkg_type: String,
     pub license: String,
@@ -118,6 +119,20 @@ pub struct Source {
     pub url: String,
     #[serde(rename = "reference", default)]
     pub reference: String,
+}
+
+/// Known Symfony configuration keys from extra.symfony.
+#[derive(Debug, Clone, Default)]
+pub struct SymfonyExtra {
+    pub require: String,
+    pub allow_contrib: Option<bool>,
+    pub docker: Option<bool>,
+}
+
+/// Framework detected from the extra field of composer.json.
+#[derive(Debug, Clone)]
+pub enum FrameworkInfo {
+    Symfony(SymfonyExtra),
 }
 
 /// ComposerJSON represents the parsed composer.json file.
@@ -139,6 +154,8 @@ pub struct ComposerJSON {
     pub autoload: Autoload,
     #[serde(rename = "autoload-dev", default)]
     pub autoload_dev: Autoload,
+    #[serde(default)]
+    pub extra: Option<serde_json::Value>,
 }
 
 /// Autoload represents autoloading configuration.

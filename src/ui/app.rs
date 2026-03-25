@@ -26,6 +26,7 @@ enum BgMsg {
     PackagesLoaded {
         packages: Vec<composer::Package>,
         lock_hash: String,
+        framework: Option<composer::FrameworkInfo>,
     },
     PackagesError(String),
     OutdatedLoaded(composer::OutdatedResult),
@@ -77,6 +78,9 @@ pub struct App {
     detail_focus: bool,
     detail_scroll: u16,
 
+    // Framework
+    framework_info: Option<composer::FrameworkInfo>,
+
     // Loading states
     loading_packages: bool,
     loading_outdated: bool,
@@ -123,6 +127,7 @@ impl App {
             loading_show: false,
             detail_focus: false,
             detail_scroll: 0,
+            framework_info: None,
             loading_packages: false,
             loading_outdated: false,
             loading_audit: false,
@@ -204,8 +209,10 @@ impl App {
                 BgMsg::PackagesLoaded {
                     packages,
                     lock_hash,
+                    framework,
                 } => {
                     self.loading_packages = false;
+                    self.framework_info = framework;
                     self.packages.set_packages(packages);
                     self.packages
                         .update_statuses(Some(&self.outdated_result), self.audit_result.as_ref());
@@ -554,7 +561,24 @@ impl App {
             y += h;
         }
 
-        // --- Right column: detail pane ---
+        // --- Right column: detail pane + optional framework panel ---
+        let (detail_area, framework_area) = if self.framework_info.is_some() {
+            // Framework panel takes ~6 lines (border + title + content)
+            let fw_h = 7u16.min(right_area.height / 3);
+            let detail_h = right_area.height.saturating_sub(fw_h);
+            (
+                Rect::new(right_area.x, right_area.y, right_area.width, detail_h),
+                Some(Rect::new(
+                    right_area.x,
+                    right_area.y + detail_h,
+                    right_area.width,
+                    fw_h,
+                )),
+            )
+        } else {
+            (right_area, None)
+        };
+
         // If show_result matches the selected package, render enriched detail
         let selected_name = match self.active_tab {
             TAB_PACKAGES => self.packages.selected_package().map(|p| p.name.as_str()),
@@ -568,7 +592,7 @@ impl App {
         if show_matches {
             render_show_detail(
                 self.show_result.as_ref().unwrap(),
-                right_area,
+                detail_area,
                 f.buffer_mut(),
                 self.detail_focus,
                 &mut self.detail_scroll,
@@ -583,7 +607,8 @@ impl App {
                     panels::packages::render_detail(
                         self.packages.selected_package(),
                         outdated_info,
-                        right_area,
+                        self.framework_info.as_ref(),
+                        detail_area,
                         f.buffer_mut(),
                         false,
                     );
@@ -592,10 +617,15 @@ impl App {
                     let block = Block::default()
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(theme::COLOR_BORDER));
-                    f.render_widget(block, right_area);
+                    f.render_widget(block, detail_area);
                 }
                 _ => {}
             }
+        }
+
+        // Framework panel (bottom-right)
+        if let (Some(fw), Some(fw_area)) = (&self.framework_info, framework_area) {
+            panels::packages::render_framework_panel(fw, fw_area, f.buffer_mut());
         }
     }
 
@@ -636,7 +666,12 @@ impl App {
         }
 
         // Hints
-        let hints = if self.help.is_visible() {
+        let hints = if self.output.is_visible() {
+            vec![Hint {
+                key: "q/esc".to_string(),
+                desc: "back".to_string(),
+            }]
+        } else if self.help.is_visible() {
             vec![Hint {
                 key: "esc/?".to_string(),
                 desc: "close".to_string(),
@@ -702,6 +737,7 @@ impl App {
                 }
             };
             let packages = parser.merge_packages(&cj, &cl);
+            let framework = cj.extra.as_ref().and_then(composer::detect_framework);
 
             let lock_path = std::path::Path::new(&dir).join("composer.lock");
             let lock_hash = match std::fs::read(&lock_path) {
@@ -718,6 +754,7 @@ impl App {
             let _ = tx.send(BgMsg::PackagesLoaded {
                 packages,
                 lock_hash,
+                framework,
             });
         });
     }
@@ -850,6 +887,21 @@ impl App {
             && !current_version.is_empty()
             && !latest_version.is_empty()
         {
+            // Check if framework constraint blocks the upgrade
+            let blocked_by_framework = self.is_upgrade_blocked_by_framework(&name, &latest_version);
+
+            if blocked_by_framework {
+                // Framework constraint blocks the major upgrade — only allow update within constraints
+                let fw_label = self.framework_constraint_label();
+                let msg = format!(
+                    "composer update {}  ({}) — {} blocks upgrade to {}",
+                    name, current_version, fw_label, latest_version
+                );
+                self.pending_action = Some(PendingAction::Update(name));
+                self.confirm.show(&msg);
+                return;
+            }
+
             let major_constraint = format!("^{}", major_version(&latest_version));
             let msg = format!("composer update {}  ({})", name, current_version);
             self.choice.show(
@@ -891,6 +943,26 @@ impl App {
 
         self.pending_action = Some(PendingAction::Update(name));
         self.confirm.show(&confirm_msg);
+    }
+
+    /// Checks if a major upgrade for this package is blocked by the framework constraint.
+    fn is_upgrade_blocked_by_framework(&self, pkg_name: &str, latest_version: &str) -> bool {
+        if let Some(composer::FrameworkInfo::Symfony(ref sf)) = self.framework_info {
+            if composer::is_symfony_package(pkg_name) && !sf.require.is_empty() {
+                return !composer::version_within_framework(latest_version, &sf.require);
+            }
+        }
+        false
+    }
+
+    /// Returns a human-readable label for the framework constraint.
+    fn framework_constraint_label(&self) -> String {
+        match &self.framework_info {
+            Some(composer::FrameworkInfo::Symfony(sf)) => {
+                format!("Symfony {}", sf.require)
+            }
+            None => String::new(),
+        }
     }
 
     fn exec_remove(&mut self, name: &str) {
