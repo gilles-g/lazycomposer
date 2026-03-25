@@ -7,6 +7,19 @@ use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
 use crate::composer::{Advisory, AuditResult};
 use crate::ui::style::{styles, theme};
+use crate::ui::text::wrap_field;
+
+/// Public enum for exposing selected audit entry to the detail panel.
+pub enum SelectedAuditEntry<'a> {
+    Advisory {
+        pkg: &'a str,
+        advisory: &'a Advisory,
+    },
+    Abandoned {
+        pkg: &'a str,
+        replaced_by: &'a str,
+    },
+}
 
 struct AdvisoryEntry {
     pkg: String,
@@ -77,6 +90,25 @@ impl AuditPanel {
     pub fn set_size(&mut self, width: u16, height: u16) {
         self.width = width;
         self.height = height;
+    }
+
+    pub fn selected_entry(&self) -> Option<SelectedAuditEntry<'_>> {
+        if self.cursor < self.advisories.len() {
+            let entry = &self.advisories[self.cursor];
+            return Some(SelectedAuditEntry::Advisory {
+                pkg: &entry.pkg,
+                advisory: &entry.advisory,
+            });
+        }
+        let abandon_idx = self.cursor - self.advisories.len();
+        if abandon_idx < self.abandoned.len() {
+            let entry = &self.abandoned[abandon_idx];
+            return Some(SelectedAuditEntry::Abandoned {
+                pkg: &entry.pkg,
+                replaced_by: &entry.replaced_by,
+            });
+        }
+        None
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
@@ -247,6 +279,156 @@ impl AuditPanel {
         }
         b
     }
+}
+
+/// Render the detail panel for the selected audit entry.
+pub fn render_audit_detail(
+    entry: Option<SelectedAuditEntry<'_>>,
+    area: Rect,
+    buf: &mut Buffer,
+    focused: bool,
+    scroll: &mut u16,
+) {
+    let border_style = if focused {
+        Style::default().fg(theme::COLOR_BORDER_FOCUS)
+    } else {
+        Style::default().fg(theme::COLOR_BORDER)
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style);
+    let inner = block.inner(area);
+    block.render(area, buf);
+
+    let entry = match entry {
+        Some(e) => e,
+        None => {
+            Paragraph::new(Span::styled("No advisory selected", styles::muted_style()))
+                .render(inner, buf);
+            return;
+        }
+    };
+
+    let lines = match entry {
+        SelectedAuditEntry::Advisory { pkg, advisory } => {
+            build_advisory_detail_lines(pkg, advisory, inner.width)
+        }
+        SelectedAuditEntry::Abandoned { pkg, replaced_by } => {
+            build_abandoned_detail_lines(pkg, replaced_by)
+        }
+    };
+
+    let max_scroll = (lines.len() as u16).saturating_sub(inner.height);
+    if *scroll > max_scroll {
+        *scroll = max_scroll;
+    }
+
+    Paragraph::new(lines)
+        .scroll((*scroll, 0))
+        .render(inner, buf);
+}
+
+fn severity_style(severity: &str) -> Style {
+    match severity.to_lowercase().as_str() {
+        "critical" => styles::error_style(),
+        "high" => Style::default()
+            .fg(theme::COLOR_DANGER)
+            .add_modifier(ratatui::style::Modifier::empty()),
+        "medium" => styles::warning_style(),
+        "low" => styles::muted_style(),
+        _ => styles::description_style(),
+    }
+}
+
+fn build_advisory_detail_lines<'a>(
+    pkg: &'a str,
+    advisory: &'a Advisory,
+    width: u16,
+) -> Vec<Line<'a>> {
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(pkg, styles::title_style())),
+        Line::default(),
+    ];
+
+    // Title
+    lines.extend(wrap_field(
+        "Title:",
+        &advisory.title,
+        styles::description_style(),
+        width,
+    ));
+
+    // Advisory ID
+    lines.push(Line::from(vec![
+        Span::styled("Advisory:  ", styles::key_style()),
+        Span::raw(&advisory.advisory_id),
+    ]));
+
+    // CVE
+    if let Some(cve) = advisory.cve.as_deref().filter(|s| !s.is_empty()) {
+        lines.push(Line::from(vec![
+            Span::styled("CVE:       ", styles::key_style()),
+            Span::styled(cve, styles::error_style()),
+        ]));
+    }
+
+    // Severity
+    if let Some(severity) = advisory.severity.as_deref().filter(|s| !s.is_empty()) {
+        lines.push(Line::from(vec![
+            Span::styled("Severity:  ", styles::key_style()),
+            Span::styled(severity, severity_style(severity)),
+        ]));
+    }
+
+    // Affected versions
+    if !advisory.affected_versions.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("Affected:  ", styles::key_style()),
+            Span::styled(&advisory.affected_versions, styles::warning_style()),
+        ]));
+    }
+
+    // Reported at
+    if !advisory.reported_at.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("Reported:  ", styles::key_style()),
+            Span::raw(&advisory.reported_at),
+        ]));
+    }
+
+    // Link
+    if !advisory.link.is_empty() {
+        lines.push(Line::default());
+        lines.push(Line::from(vec![
+            Span::styled("Link:  ", styles::key_style()),
+            Span::styled(&advisory.link, Style::default().fg(theme::COLOR_INFO)),
+        ]));
+    }
+
+    lines
+}
+
+fn build_abandoned_detail_lines<'a>(pkg: &'a str, replaced_by: &'a str) -> Vec<Line<'a>> {
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(pkg, styles::title_style())),
+        Line::default(),
+        Line::from(Span::styled("⚑ Abandoned Package", styles::warning_style())),
+        Line::default(),
+    ];
+
+    if replaced_by.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "No replacement suggested",
+            styles::muted_style(),
+        )));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled("Replace with:  ", styles::key_style()),
+            Span::styled(replaced_by, styles::version_style()),
+        ]));
+    }
+
+    lines
 }
 
 #[cfg(test)]

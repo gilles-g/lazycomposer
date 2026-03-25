@@ -439,6 +439,14 @@ impl App {
             KeyCode::Char('s') | KeyCode::Enter if self.active_tab == TAB_PACKAGES => {
                 self.handle_show_selected();
             }
+            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right
+                if self.active_tab == TAB_AUDIT =>
+            {
+                if self.audit.selected_entry().is_some() {
+                    self.detail_focus = true;
+                    self.detail_scroll = 0;
+                }
+            }
             KeyCode::Char('l') | KeyCode::Right if self.active_tab == TAB_PACKAGES => {
                 if self.show_result.is_some() {
                     self.detail_focus = true;
@@ -614,10 +622,13 @@ impl App {
                     );
                 }
                 TAB_AUDIT => {
-                    let block = Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(theme::COLOR_BORDER));
-                    f.render_widget(block, detail_area);
+                    panels::audit::render_audit_detail(
+                        self.audit.selected_entry(),
+                        detail_area,
+                        f.buffer_mut(),
+                        self.detail_focus,
+                        &mut self.detail_scroll,
+                    );
                 }
                 _ => {}
             }
