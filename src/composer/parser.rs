@@ -250,7 +250,10 @@ pub fn find_best_version_in_constraint(versions: &[String], constraint: &str) ->
         if !version_satisfies_constraint(v, constraint) {
             continue;
         }
-        if best.as_ref().is_none_or(|(bm, bmin, bp, _)| parsed > (*bm, *bmin, *bp)) {
+        if best
+            .as_ref()
+            .is_none_or(|(bm, bmin, bp, _)| parsed > (*bm, *bmin, *bp))
+        {
             best = Some((parsed.0, parsed.1, parsed.2, v.clone()));
         }
     }

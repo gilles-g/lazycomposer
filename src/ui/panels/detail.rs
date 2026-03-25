@@ -145,9 +145,7 @@ pub fn render_detail(
         PackageStatus::Vulnerable => Span::styled("Vulnerable", styles::package_vulnerable_style()),
         PackageStatus::Abandoned => Span::styled("Abandoned", styles::package_abandoned_style()),
         PackageStatus::Outdated => Span::styled("Outdated", styles::package_outdated_style()),
-        PackageStatus::Restricted => {
-            Span::styled("Restricted", styles::package_restricted_style())
-        }
+        PackageStatus::Restricted => Span::styled("Restricted", styles::package_restricted_style()),
         _ => Span::styled("OK", styles::package_ok_style()),
     };
     lines.push(Line::from(vec![

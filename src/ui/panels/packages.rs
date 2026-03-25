@@ -8,7 +8,6 @@ use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 use crate::composer::{AuditResult, FrameworkInfo, OutdatedPackage, Package, PackageStatus};
 use crate::ui::style::{styles, theme};
 
-
 /// PackagesPanel shows the list of installed packages, split into require and require-dev.
 pub struct PackagesPanel {
     pub packages: Vec<Package>,
@@ -105,7 +104,9 @@ impl PackagesPanel {
 
         if let Some(outdated) = outdated {
             for o in outdated {
-                if crate::composer::is_blocked_by_framework(&o.name, &o.version, &o.latest, framework) {
+                if crate::composer::is_blocked_by_framework(
+                    &o.name, &o.version, &o.latest, framework,
+                ) {
                     restricted_names.insert(o.name.clone());
                 } else {
                     outdated_names.insert(o.name.clone());
@@ -724,10 +725,18 @@ mod tests {
         p.update_statuses(Some(&outdated), None, Some(&framework));
         for pkg in &p.packages {
             if pkg.name == "symfony/framework-bundle" {
-                assert_eq!(pkg.status, PackageStatus::Restricted, "symfony pkg should be Restricted when latest is outside framework constraint");
+                assert_eq!(
+                    pkg.status,
+                    PackageStatus::Restricted,
+                    "symfony pkg should be Restricted when latest is outside framework constraint"
+                );
             }
             if pkg.name == "doctrine/orm" {
-                assert_eq!(pkg.status, PackageStatus::Outdated, "non-symfony pkg should still be outdated");
+                assert_eq!(
+                    pkg.status,
+                    PackageStatus::Outdated,
+                    "non-symfony pkg should still be outdated"
+                );
             }
         }
     }
@@ -752,7 +761,11 @@ mod tests {
         p.update_statuses(Some(&outdated), None, Some(&framework));
         for pkg in &p.packages {
             if pkg.name == "symfony/framework-bundle" {
-                assert_eq!(pkg.status, PackageStatus::Outdated, "symfony pkg should be outdated when latest is within framework constraint");
+                assert_eq!(
+                    pkg.status,
+                    PackageStatus::Outdated,
+                    "symfony pkg should be outdated when latest is within framework constraint"
+                );
             }
         }
     }

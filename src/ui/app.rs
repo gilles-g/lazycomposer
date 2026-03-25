@@ -220,8 +220,11 @@ impl App {
                     self.loading_packages = false;
                     self.framework_info = framework;
                     self.packages.set_packages(packages);
-                    self.packages
-                        .update_statuses(Some(&self.outdated_result), self.audit_result.as_ref(), self.framework_info.as_ref());
+                    self.packages.update_statuses(
+                        Some(&self.outdated_result),
+                        self.audit_result.as_ref(),
+                        self.framework_info.as_ref(),
+                    );
                     // On reload (after an action), re-fetch outdated/audit if lock changed
                     if !self.lock_hash.is_empty() && lock_hash != self.lock_hash {
                         self.spawn_load_outdated();
@@ -240,8 +243,11 @@ impl App {
                 BgMsg::OutdatedLoaded(result) => {
                     self.loading_outdated = false;
                     self.outdated_result = result.installed;
-                    self.packages
-                        .update_statuses(Some(&self.outdated_result), self.audit_result.as_ref(), self.framework_info.as_ref());
+                    self.packages.update_statuses(
+                        Some(&self.outdated_result),
+                        self.audit_result.as_ref(),
+                        self.framework_info.as_ref(),
+                    );
                     self.spawn_resolve_all_restricted();
                     if !self.loading_packages && !self.loading_audit {
                         self.spinner.stop();
@@ -258,8 +264,11 @@ impl App {
                     self.loading_audit = false;
                     self.audit.set_audit(Some(&result));
                     self.audit_result = Some(result);
-                    self.packages
-                        .update_statuses(Some(&self.outdated_result), self.audit_result.as_ref(), self.framework_info.as_ref());
+                    self.packages.update_statuses(
+                        Some(&self.outdated_result),
+                        self.audit_result.as_ref(),
+                        self.framework_info.as_ref(),
+                    );
                     if !self.loading_packages && !self.loading_outdated {
                         self.spinner.stop();
                     }
@@ -610,8 +619,8 @@ impl App {
 
         if show_matches {
             let pkg = self.packages.selected_package();
-            let outdated_info = pkg
-                .and_then(|p| self.outdated_result.iter().find(|o| o.name == p.name));
+            let outdated_info =
+                pkg.and_then(|p| self.outdated_result.iter().find(|o| o.name == p.name));
             render_show_detail(
                 self.show_result.as_ref().unwrap(),
                 pkg,
@@ -880,16 +889,10 @@ impl App {
         let name = pkg_name.to_string();
         let constraint = constraint.to_string();
         thread::spawn(move || {
-            let best_version = runner
-                .show_all(&dir, &name)
-                .ok()
-                .and_then(|show| {
-                    composer::find_best_version_in_constraint(&show.versions, &constraint)
-                });
-            let _ = tx.send(BgMsg::RestrictedVersionLoaded {
-                name,
-                best_version,
+            let best_version = runner.show_all(&dir, &name).ok().and_then(|show| {
+                composer::find_best_version_in_constraint(&show.versions, &constraint)
             });
+            let _ = tx.send(BgMsg::RestrictedVersionLoaded { name, best_version });
         });
     }
 
@@ -1174,10 +1177,18 @@ fn render_show_detail(
 
         // Status
         let status_span = match p.status {
-            composer::PackageStatus::Vulnerable => Span::styled("Vulnerable", styles::package_vulnerable_style()),
-            composer::PackageStatus::Abandoned => Span::styled("Abandoned", styles::package_abandoned_style()),
-            composer::PackageStatus::Outdated => Span::styled("Outdated", styles::package_outdated_style()),
-            composer::PackageStatus::Restricted => Span::styled("Restricted", styles::package_restricted_style()),
+            composer::PackageStatus::Vulnerable => {
+                Span::styled("Vulnerable", styles::package_vulnerable_style())
+            }
+            composer::PackageStatus::Abandoned => {
+                Span::styled("Abandoned", styles::package_abandoned_style())
+            }
+            composer::PackageStatus::Outdated => {
+                Span::styled("Outdated", styles::package_outdated_style())
+            }
+            composer::PackageStatus::Restricted => {
+                Span::styled("Restricted", styles::package_restricted_style())
+            }
             _ => Span::styled("OK", styles::package_ok_style()),
         };
         lines.push(Line::from(vec![
