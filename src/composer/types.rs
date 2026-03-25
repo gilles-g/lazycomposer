@@ -247,9 +247,30 @@ impl<'de> Deserialize<'de> for AuditResult {
 
         let raw = RawAuditResult::deserialize(deserializer)?;
 
-        let advisories = match &raw.advisories {
-            serde_json::Value::Object(_) => {
-                serde_json::from_value(raw.advisories).map_err(de::Error::custom)?
+        let advisories = match raw.advisories {
+            serde_json::Value::Object(map) => {
+                let mut result: HashMap<String, Vec<Advisory>> = HashMap::new();
+                for (pkg_name, value) in map {
+                    let advs = match value {
+                        // Normal case: array of advisories
+                        serde_json::Value::Array(_) => {
+                            serde_json::from_value(value).map_err(de::Error::custom)?
+                        }
+                        // Composer quirk: object with numeric keys instead of array
+                        serde_json::Value::Object(inner) => {
+                            let mut vec = Vec::new();
+                            for (_key, adv_val) in inner {
+                                let adv: Advisory =
+                                    serde_json::from_value(adv_val).map_err(de::Error::custom)?;
+                                vec.push(adv);
+                            }
+                            vec
+                        }
+                        _ => Vec::new(),
+                    };
+                    result.insert(pkg_name, advs);
+                }
+                result
             }
             _ => HashMap::new(), // [] or null
         };
@@ -500,6 +521,43 @@ mod tests {
         assert_eq!(result.abandoned.len(), 2);
         assert_eq!(result.abandoned["old/pkg"].as_deref(), Some("new/pkg"));
         assert!(result.abandoned["dead/pkg"].is_none());
+    }
+
+    #[test]
+    fn audit_result_advisories_as_object() {
+        // Composer quirk: when advisories are keyed by numeric strings instead of an array
+        let input = r#"{
+            "advisories": {
+                "twig/twig": {
+                    "1": {
+                        "advisoryId": "ADV-100",
+                        "packageName": "twig/twig",
+                        "title": "Sandbox bypass",
+                        "link": "https://example.com",
+                        "cve": "CVE-2024-0100",
+                        "affectedVersions": ">=1.0",
+                        "reportedAt": "2024-09-01",
+                        "severity": "medium"
+                    },
+                    "2": {
+                        "advisoryId": "ADV-101",
+                        "packageName": "twig/twig",
+                        "title": "Another issue",
+                        "link": "https://example.com",
+                        "cve": null,
+                        "affectedVersions": ">=2.0",
+                        "reportedAt": "2024-11-01",
+                        "severity": "low"
+                    }
+                }
+            },
+            "abandoned": []
+        }"#;
+
+        let result: AuditResult = serde_json::from_str(input).unwrap();
+        assert_eq!(result.advisories.len(), 1);
+        assert_eq!(result.advisories["twig/twig"].len(), 2);
+        assert!(result.abandoned.is_empty());
     }
 
     #[test]
