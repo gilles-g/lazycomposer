@@ -93,10 +93,6 @@ fn help_sections() -> Vec<HelpSection> {
                     key: "shift+tab".to_string(),
                     desc: "previous tab / toggle focus".to_string(),
                 },
-                Hint {
-                    key: "1 / 2".to_string(),
-                    desc: "go to Packages / Audit".to_string(),
-                },
             ],
         },
         HelpSection {

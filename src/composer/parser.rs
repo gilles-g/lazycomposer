@@ -299,6 +299,32 @@ mod tests {
         assert_eq!(cj.require_dev.len(), 2);
         assert_eq!(cj.require["symfony/framework-bundle"], "^7.0");
         assert!(cj.extra.is_some());
+
+        // New fields
+        assert_eq!(cj.license, vec!["MIT"]);
+        assert_eq!(cj.homepage, "https://example.com/test-project");
+        assert_eq!(cj.minimum_stability, "stable");
+        assert!(cj.prefer_stable);
+        assert_eq!(cj.authors.len(), 2);
+        assert_eq!(cj.authors[0].name, "John Doe");
+        assert_eq!(cj.authors[0].email, "john@example.com");
+        assert_eq!(cj.authors[1].name, "Jane Smith");
+        let support = cj.support.as_ref().unwrap();
+        assert_eq!(support.issues, "https://github.com/test/project/issues");
+        assert_eq!(support.source, "https://github.com/test/project");
+        assert_eq!(support.docs, "https://docs.example.com");
+        assert_eq!(cj.replace.len(), 1);
+        assert_eq!(cj.replace["symfony/polyfill-php72"], "*");
+        assert_eq!(cj.conflict.len(), 1);
+        assert_eq!(cj.conflict["old/broken-pkg"], "<2.0");
+        assert_eq!(cj.provide.len(), 1);
+        assert_eq!(cj.provide["psr/log-implementation"], "1.0");
+        assert_eq!(cj.suggest.len(), 1);
+        assert!(cj.suggest.contains_key("ext-intl"));
+        assert!(cj.repositories.is_some());
+        assert_eq!(cj.scripts.len(), 2);
+        assert!(cj.scripts.contains_key("test"));
+        assert!(cj.config.is_some());
     }
 
     #[test]
@@ -363,17 +389,10 @@ mod tests {
     fn merge_packages_empty_lock() {
         let p = Parser::new();
         let cj = ComposerJSON {
-            name: String::new(),
-            description: String::new(),
-            pkg_type: String::new(),
-            license: String::new(),
             require: [("vendor/pkg".to_string(), "^1.0".to_string())]
                 .into_iter()
                 .collect(),
-            require_dev: Default::default(),
-            autoload: Default::default(),
-            autoload_dev: Default::default(),
-            extra: None,
+            ..Default::default()
         };
         let cl = ComposerLock {
             packages: vec![],
@@ -387,17 +406,10 @@ mod tests {
     fn merge_packages_only_dev() {
         let p = Parser::new();
         let cj = ComposerJSON {
-            name: String::new(),
-            description: String::new(),
-            pkg_type: String::new(),
-            license: String::new(),
-            require: Default::default(),
             require_dev: [("phpunit/phpunit".to_string(), "^11.0".to_string())]
                 .into_iter()
                 .collect(),
-            autoload: Default::default(),
-            autoload_dev: Default::default(),
-            extra: None,
+            ..Default::default()
         };
         let cl = ComposerLock {
             packages: vec![],
@@ -419,17 +431,10 @@ mod tests {
     fn merge_packages_multiple_licenses() {
         let p = Parser::new();
         let cj = ComposerJSON {
-            name: String::new(),
-            description: String::new(),
-            pkg_type: String::new(),
-            license: String::new(),
             require: [("vendor/pkg".to_string(), "^1.0".to_string())]
                 .into_iter()
                 .collect(),
-            require_dev: Default::default(),
-            autoload: Default::default(),
-            autoload_dev: Default::default(),
-            extra: None,
+            ..Default::default()
         };
         let cl = ComposerLock {
             packages: vec![LockPackage {
@@ -449,17 +454,10 @@ mod tests {
     fn merge_packages_no_license() {
         let p = Parser::new();
         let cj = ComposerJSON {
-            name: String::new(),
-            description: String::new(),
-            pkg_type: String::new(),
-            license: String::new(),
             require: [("vendor/pkg".to_string(), "^1.0".to_string())]
                 .into_iter()
                 .collect(),
-            require_dev: Default::default(),
-            autoload: Default::default(),
-            autoload_dev: Default::default(),
-            extra: None,
+            ..Default::default()
         };
         let cl = ComposerLock {
             packages: vec![LockPackage {
@@ -479,17 +477,10 @@ mod tests {
     fn merge_packages_transitive_filtered() {
         let p = Parser::new();
         let cj = ComposerJSON {
-            name: String::new(),
-            description: String::new(),
-            pkg_type: String::new(),
-            license: String::new(),
             require: [("vendor/pkg".to_string(), "^1.0".to_string())]
                 .into_iter()
                 .collect(),
-            require_dev: Default::default(),
-            autoload: Default::default(),
-            autoload_dev: Default::default(),
-            extra: None,
+            ..Default::default()
         };
         let cl = ComposerLock {
             packages: vec![
@@ -516,17 +507,10 @@ mod tests {
     fn merge_packages_source_info() {
         let p = Parser::new();
         let cj = ComposerJSON {
-            name: String::new(),
-            description: String::new(),
-            pkg_type: String::new(),
-            license: String::new(),
             require: [("vendor/pkg".to_string(), "^1.0".to_string())]
                 .into_iter()
                 .collect(),
-            require_dev: Default::default(),
-            autoload: Default::default(),
-            autoload_dev: Default::default(),
-            extra: None,
+            ..Default::default()
         };
         let cl = ComposerLock {
             packages: vec![LockPackage {

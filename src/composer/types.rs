@@ -13,6 +13,53 @@ where
     Ok(opt.unwrap_or_default())
 }
 
+/// Deserializes a JSON value that can be a string or an array of strings into Vec<String>.
+/// `"MIT"` → `vec!["MIT"]`, `["MIT", "Apache-2.0"]` → `vec!["MIT", "Apache-2.0"]`.
+fn string_or_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct StringOrVecVisitor;
+
+    impl<'de> Visitor<'de> for StringOrVecVisitor {
+        type Value = Vec<String>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a string or an array of strings")
+        }
+
+        fn visit_str<E>(self, v: &str) -> Result<Vec<String>, E>
+        where
+            E: de::Error,
+        {
+            Ok(vec![v.to_string()])
+        }
+
+        fn visit_seq<A>(self, seq: A) -> Result<Vec<String>, A::Error>
+        where
+            A: de::SeqAccess<'de>,
+        {
+            Vec::deserialize(de::value::SeqAccessDeserializer::new(seq))
+        }
+
+        fn visit_none<E>(self) -> Result<Vec<String>, E>
+        where
+            E: de::Error,
+        {
+            Ok(Vec::new())
+        }
+
+        fn visit_unit<E>(self) -> Result<Vec<String>, E>
+        where
+            E: de::Error,
+        {
+            Ok(Vec::new())
+        }
+    }
+
+    deserializer.deserialize_any(StringOrVecVisitor)
+}
+
 /// StringOrBool handles JSON fields that can be either a string or a boolean.
 /// Composer outputs `"abandoned": false` or `"abandoned": "replacement/pkg"`.
 #[derive(Debug, Clone, Default)]
@@ -131,6 +178,44 @@ pub struct SymfonyExtra {
     pub docker: Option<bool>,
 }
 
+/// Author of a Composer package.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct Author {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub email: String,
+    #[serde(default)]
+    pub homepage: String,
+    #[serde(default)]
+    pub role: String,
+}
+
+/// Support information for a Composer package.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct Support {
+    #[serde(default)]
+    pub email: String,
+    #[serde(default)]
+    pub issues: String,
+    #[serde(default)]
+    pub forum: String,
+    #[serde(default)]
+    pub wiki: String,
+    #[serde(default)]
+    pub irc: String,
+    #[serde(default)]
+    pub chat: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub docs: String,
+    #[serde(default)]
+    pub rss: String,
+    #[serde(default)]
+    pub security: String,
+}
+
 /// Framework detected from the extra field of composer.json.
 #[derive(Debug, Clone)]
 pub enum FrameworkInfo {
@@ -138,7 +223,7 @@ pub enum FrameworkInfo {
 }
 
 /// ComposerJSON represents the parsed composer.json file.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct ComposerJSON {
     #[serde(default)]
     pub name: String,
@@ -146,16 +231,40 @@ pub struct ComposerJSON {
     pub description: String,
     #[serde(rename = "type", default)]
     pub pkg_type: String,
+    #[serde(deserialize_with = "string_or_vec", default)]
+    pub license: Vec<String>,
     #[serde(default)]
-    pub license: String,
+    pub homepage: String,
+    #[serde(default)]
+    pub authors: Vec<Author>,
+    #[serde(default)]
+    pub support: Option<Support>,
     #[serde(default)]
     pub require: HashMap<String, String>,
     #[serde(rename = "require-dev", default)]
     pub require_dev: HashMap<String, String>,
     #[serde(default)]
+    pub replace: HashMap<String, String>,
+    #[serde(default)]
+    pub conflict: HashMap<String, String>,
+    #[serde(default)]
+    pub provide: HashMap<String, String>,
+    #[serde(default)]
+    pub suggest: HashMap<String, String>,
+    #[serde(default)]
+    pub repositories: Option<serde_json::Value>,
+    #[serde(rename = "minimum-stability", default)]
+    pub minimum_stability: String,
+    #[serde(rename = "prefer-stable", default)]
+    pub prefer_stable: bool,
+    #[serde(default)]
     pub autoload: Autoload,
     #[serde(rename = "autoload-dev", default)]
     pub autoload_dev: Autoload,
+    #[serde(default)]
+    pub scripts: HashMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub config: Option<serde_json::Value>,
     #[serde(default)]
     pub extra: Option<serde_json::Value>,
 }
@@ -342,6 +451,12 @@ pub struct ShowResult {
     pub dev_requires: HashMap<String, String>,
     #[serde(default)]
     pub conflicts: HashMap<String, String>,
+    #[serde(default)]
+    pub replaces: HashMap<String, String>,
+    #[serde(default)]
+    pub provides: HashMap<String, String>,
+    #[serde(default)]
+    pub suggests: HashMap<String, String>,
 }
 
 /// Advisory is a security advisory for a package.
@@ -692,5 +807,161 @@ mod tests {
         assert_eq!(PackageStatus::Abandoned as u8, 2);
         assert_eq!(PackageStatus::Vulnerable as u8, 3);
         assert_eq!(PackageStatus::Restricted as u8, 4);
+    }
+
+    // --- string_or_vec tests ---
+
+    #[test]
+    fn string_or_vec_from_string() {
+        #[derive(Deserialize)]
+        struct W {
+            #[serde(deserialize_with = "string_or_vec", default)]
+            license: Vec<String>,
+        }
+        let w: W = serde_json::from_str(r#"{"license": "MIT"}"#).unwrap();
+        assert_eq!(w.license, vec!["MIT"]);
+    }
+
+    #[test]
+    fn string_or_vec_from_array() {
+        #[derive(Deserialize)]
+        struct W {
+            #[serde(deserialize_with = "string_or_vec", default)]
+            license: Vec<String>,
+        }
+        let w: W = serde_json::from_str(r#"{"license": ["MIT", "Apache-2.0"]}"#).unwrap();
+        assert_eq!(w.license, vec!["MIT", "Apache-2.0"]);
+    }
+
+    #[test]
+    fn string_or_vec_missing_field() {
+        #[derive(Deserialize)]
+        struct W {
+            #[serde(deserialize_with = "string_or_vec", default)]
+            license: Vec<String>,
+        }
+        let w: W = serde_json::from_str(r#"{}"#).unwrap();
+        assert!(w.license.is_empty());
+    }
+
+    // --- Author tests ---
+
+    #[test]
+    fn author_full() {
+        let input = r#"{
+            "name": "John Doe",
+            "email": "john@example.com",
+            "homepage": "https://johndoe.dev",
+            "role": "Developer"
+        }"#;
+        let author: Author = serde_json::from_str(input).unwrap();
+        assert_eq!(author.name, "John Doe");
+        assert_eq!(author.email, "john@example.com");
+        assert_eq!(author.homepage, "https://johndoe.dev");
+        assert_eq!(author.role, "Developer");
+    }
+
+    #[test]
+    fn author_partial() {
+        let input = r#"{"name": "Jane"}"#;
+        let author: Author = serde_json::from_str(input).unwrap();
+        assert_eq!(author.name, "Jane");
+        assert_eq!(author.email, "");
+    }
+
+    // --- Support tests ---
+
+    #[test]
+    fn support_full() {
+        let input = r#"{
+            "issues": "https://github.com/test/issues",
+            "source": "https://github.com/test",
+            "docs": "https://docs.test.com",
+            "email": "support@test.com"
+        }"#;
+        let support: Support = serde_json::from_str(input).unwrap();
+        assert_eq!(support.issues, "https://github.com/test/issues");
+        assert_eq!(support.source, "https://github.com/test");
+        assert_eq!(support.docs, "https://docs.test.com");
+        assert_eq!(support.email, "support@test.com");
+        assert_eq!(support.forum, "");
+    }
+
+    // --- ComposerJSON new fields tests ---
+
+    #[test]
+    fn composer_json_all_new_fields() {
+        let input = r#"{
+            "name": "test/pkg",
+            "license": ["MIT", "Apache-2.0"],
+            "homepage": "https://example.com",
+            "minimum-stability": "dev",
+            "prefer-stable": true,
+            "authors": [{"name": "Alice"}],
+            "support": {"issues": "https://issues.example.com"},
+            "require": {"php": ">=8.2"},
+            "require-dev": {},
+            "replace": {"old/pkg": "self.version"},
+            "conflict": {"bad/pkg": "<1.0"},
+            "provide": {"psr/log-implementation": "1.0"},
+            "suggest": {"ext-intl": "For i18n"},
+            "repositories": [{"type": "vcs", "url": "https://github.com/x/y"}],
+            "scripts": {"test": "phpunit"},
+            "config": {"sort-packages": true}
+        }"#;
+
+        let cj: ComposerJSON = serde_json::from_str(input).unwrap();
+        assert_eq!(cj.name, "test/pkg");
+        assert_eq!(cj.license, vec!["MIT", "Apache-2.0"]);
+        assert_eq!(cj.homepage, "https://example.com");
+        assert_eq!(cj.minimum_stability, "dev");
+        assert!(cj.prefer_stable);
+        assert_eq!(cj.authors.len(), 1);
+        assert_eq!(cj.authors[0].name, "Alice");
+        assert_eq!(
+            cj.support.as_ref().unwrap().issues,
+            "https://issues.example.com"
+        );
+        assert_eq!(cj.replace["old/pkg"], "self.version");
+        assert_eq!(cj.conflict["bad/pkg"], "<1.0");
+        assert_eq!(cj.provide["psr/log-implementation"], "1.0");
+        assert_eq!(cj.suggest["ext-intl"], "For i18n");
+        assert!(cj.repositories.is_some());
+        assert!(cj.scripts.contains_key("test"));
+        assert!(cj.config.is_some());
+    }
+
+    #[test]
+    fn composer_json_minimal() {
+        let input = r#"{"name": "a/b"}"#;
+        let cj: ComposerJSON = serde_json::from_str(input).unwrap();
+        assert_eq!(cj.name, "a/b");
+        assert!(cj.license.is_empty());
+        assert!(cj.homepage.is_empty());
+        assert!(cj.minimum_stability.is_empty());
+        assert!(!cj.prefer_stable);
+        assert!(cj.authors.is_empty());
+        assert!(cj.support.is_none());
+        assert!(cj.replace.is_empty());
+        assert!(cj.conflict.is_empty());
+        assert!(cj.provide.is_empty());
+        assert!(cj.suggest.is_empty());
+        assert!(cj.repositories.is_none());
+        assert!(cj.scripts.is_empty());
+        assert!(cj.config.is_none());
+    }
+
+    #[test]
+    fn composer_json_license_as_string() {
+        let input = r#"{"license": "MIT"}"#;
+        let cj: ComposerJSON = serde_json::from_str(input).unwrap();
+        assert_eq!(cj.license, vec!["MIT"]);
+    }
+
+    #[test]
+    fn composer_json_license_as_array() {
+        let input = r#"{"license": ["MIT", "GPL-3.0"]}"#;
+        let cj: ComposerJSON = serde_json::from_str(input).unwrap();
+        assert_eq!(cj.license, vec!["MIT", "GPL-3.0"]);
     }
 }
