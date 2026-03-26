@@ -16,6 +16,12 @@ Built with [ratatui](https://ratatui.rs) + [crossterm](https://github.com/crosst
 
 ![Rust](https://img.shields.io/badge/rust-stable-orange)
 
+## Screenshots
+
+![Packages view](screenshot-1.png)
+
+![Audit view](screenshot-2.png)
+
 ## Features
 
 - **Packages** — Browse all `require` and `require-dev` dependencies with version details
