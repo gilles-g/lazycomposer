@@ -7,7 +7,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 use ratatui::Terminal;
 
 use crate::composer::{self, Runner, StreamLine};
@@ -20,6 +20,7 @@ use crate::ui::style::{styles, theme};
 
 const TAB_PACKAGES: usize = 0;
 const TAB_AUDIT: usize = 1;
+const TAB_PROJECT: usize = 2;
 
 /// Messages from background threads.
 enum BgMsg {
@@ -27,6 +28,7 @@ enum BgMsg {
         packages: Vec<composer::Package>,
         lock_hash: String,
         framework: Option<composer::FrameworkInfo>,
+        composer_json: Box<composer::ComposerJSON>,
     },
     PackagesError(String),
     OutdatedLoaded(composer::OutdatedResult),
@@ -85,6 +87,9 @@ pub struct App {
     // Framework
     framework_info: Option<composer::FrameworkInfo>,
 
+    // Project metadata
+    composer_json: Option<composer::ComposerJSON>,
+
     // Loading states
     loading_packages: bool,
     loading_outdated: bool,
@@ -133,6 +138,7 @@ impl App {
             detail_focus: false,
             detail_scroll: 0,
             framework_info: None,
+            composer_json: None,
             loading_packages: false,
             loading_outdated: false,
             loading_audit: false,
@@ -216,9 +222,11 @@ impl App {
                     packages,
                     lock_hash,
                     framework,
+                    composer_json,
                 } => {
                     self.loading_packages = false;
                     self.framework_info = framework;
+                    self.composer_json = Some(*composer_json);
                     self.packages.set_packages(packages);
                     self.packages.update_statuses(
                         Some(&self.outdated_result),
@@ -380,6 +388,9 @@ impl App {
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return true,
                 KeyCode::Char('q') => return true,
                 KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left => {
+                    if self.show_result.is_some() {
+                        self.show_result = None;
+                    }
                     self.detail_focus = false;
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
@@ -402,15 +413,7 @@ impl App {
         match key.code {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return true,
             KeyCode::Char('q') => return true,
-            KeyCode::Char('1') => {
-                self.active_tab = TAB_PACKAGES;
-                self.show_result = None;
-            }
-            KeyCode::Char('2') => {
-                self.active_tab = TAB_AUDIT;
-                self.show_result = None;
-            }
-            KeyCode::Tab => {
+            KeyCode::Tab | KeyCode::Right => {
                 if self.active_tab == TAB_PACKAGES && !self.packages.focus_dev {
                     // require → require-dev
                     self.packages.focus_dev = true;
@@ -419,25 +422,33 @@ impl App {
                     self.packages.focus_dev = false;
                     self.active_tab = TAB_AUDIT;
                     self.show_result = None;
+                } else if self.active_tab == TAB_AUDIT {
+                    // audit → project
+                    self.active_tab = TAB_PROJECT;
+                    self.show_result = None;
                 } else {
-                    // audit → require
+                    // project → require
                     self.active_tab = TAB_PACKAGES;
                     self.packages.focus_dev = false;
                     self.show_result = None;
                 }
             }
-            KeyCode::BackTab => {
+            KeyCode::BackTab | KeyCode::Left => {
                 if self.active_tab == TAB_PACKAGES && self.packages.focus_dev {
                     // require-dev → require
                     self.packages.focus_dev = false;
                 } else if self.active_tab == TAB_PACKAGES && !self.packages.focus_dev {
-                    // require → audit
-                    self.active_tab = TAB_AUDIT;
+                    // require → project
+                    self.active_tab = TAB_PROJECT;
                     self.show_result = None;
-                } else {
+                } else if self.active_tab == TAB_AUDIT {
                     // audit → require-dev
                     self.active_tab = TAB_PACKAGES;
                     self.packages.focus_dev = true;
+                    self.show_result = None;
+                } else {
+                    // project → audit
+                    self.active_tab = TAB_AUDIT;
                     self.show_result = None;
                 }
             }
@@ -459,15 +470,13 @@ impl App {
             KeyCode::Char('s') | KeyCode::Enter if self.active_tab == TAB_PACKAGES => {
                 self.handle_show_selected();
             }
-            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right
-                if self.active_tab == TAB_AUDIT =>
-            {
+            KeyCode::Enter | KeyCode::Char('l') if self.active_tab == TAB_AUDIT => {
                 if self.audit.selected_entry().is_some() {
                     self.detail_focus = true;
                     self.detail_scroll = 0;
                 }
             }
-            KeyCode::Char('l') | KeyCode::Right if self.active_tab == TAB_PACKAGES => {
+            KeyCode::Char('l') if self.active_tab == TAB_PACKAGES => {
                 if self.show_result.is_some() {
                     self.detail_focus = true;
                     self.detail_scroll = 0;
@@ -490,7 +499,16 @@ impl App {
         let size = f.area();
         self.layout = compute_layout(size.width, size.height);
 
-        let content_area = Rect::new(0, 0, size.width, self.layout.content_h);
+        // Tab bar at the top
+        let tab_area = Rect::new(0, 0, size.width, TAB_BAR_H);
+        render_tab_bar(self.active_tab, tab_area, f.buffer_mut());
+
+        let content_area = Rect::new(
+            0,
+            TAB_BAR_H,
+            size.width,
+            self.layout.content_h.saturating_sub(TAB_BAR_H),
+        );
 
         if self.output.is_visible() {
             self.output.render(content_area, f.buffer_mut());
@@ -548,6 +566,28 @@ impl App {
     }
 
     fn render_panels(&mut self, f: &mut ratatui::Frame, area: Rect) {
+        // Project tab: full-width panel
+        if self.active_tab == TAB_PROJECT {
+            if let Some(cj) = &self.composer_json {
+                panels::project::render_project_panel(
+                    cj,
+                    self.framework_info.as_ref(),
+                    area,
+                    f.buffer_mut(),
+                    true,
+                );
+            } else {
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme::COLOR_BORDER))
+                    .title(" Project ");
+                let inner = block.inner(area);
+                block.render(area, f.buffer_mut());
+                Paragraph::new("Loading…").render(inner, f.buffer_mut());
+            }
+            return;
+        }
+
         // Split into left (stacked cards) and right (detail) columns
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
@@ -589,33 +629,37 @@ impl App {
             y += h;
         }
 
-        // --- Right column: detail pane + optional framework panel ---
-        let (detail_area, framework_area) = if self.framework_info.is_some() {
-            // Framework panel takes ~6 lines (border + title + content)
-            let fw_h = 7u16.min(right_area.height / 3);
-            let detail_h = right_area.height.saturating_sub(fw_h);
+        // --- Right column: detail pane + bottom panel (framework or tags) ---
+        let show_matches = self.show_result.as_ref().is_some_and(|sr| {
+            let sel = match self.active_tab {
+                TAB_PACKAGES => self.packages.selected_package().map(|p| p.name.as_str()),
+                _ => None,
+            };
+            sel.is_some_and(|name| sr.name == name)
+        });
+
+        let needs_bottom_panel = show_matches || self.framework_info.is_some();
+        let (detail_area, bottom_area) = if needs_bottom_panel {
+            let bottom_h = if show_matches {
+                // Tags panel: larger
+                (right_area.height / 3).max(8).min(right_area.height)
+            } else {
+                // Framework panel: compact
+                7u16.min(right_area.height / 3)
+            };
+            let detail_h = right_area.height.saturating_sub(bottom_h);
             (
                 Rect::new(right_area.x, right_area.y, right_area.width, detail_h),
                 Some(Rect::new(
                     right_area.x,
                     right_area.y + detail_h,
                     right_area.width,
-                    fw_h,
+                    bottom_h,
                 )),
             )
         } else {
             (right_area, None)
         };
-
-        // If show_result matches the selected package, render enriched detail
-        let selected_name = match self.active_tab {
-            TAB_PACKAGES => self.packages.selected_package().map(|p| p.name.as_str()),
-            _ => None,
-        };
-        let show_matches = self
-            .show_result
-            .as_ref()
-            .is_some_and(|sr| selected_name.is_some_and(|name| sr.name == name));
 
         if show_matches {
             let pkg = self.packages.selected_package();
@@ -658,9 +702,13 @@ impl App {
             }
         }
 
-        // Framework panel (bottom-right)
-        if let (Some(fw), Some(fw_area)) = (&self.framework_info, framework_area) {
-            panels::packages::render_framework_panel(fw, fw_area, f.buffer_mut());
+        // Bottom-right panel: tags (when show active) or framework
+        if let Some(area) = bottom_area {
+            if show_matches {
+                render_tags_panel(self.show_result.as_ref().unwrap(), area, f.buffer_mut());
+            } else if let Some(fw) = &self.framework_info {
+                panels::packages::render_framework_panel(fw, area, f.buffer_mut());
+            }
         }
     }
 
@@ -790,6 +838,7 @@ impl App {
                 packages,
                 lock_hash,
                 framework,
+                composer_json: Box::new(cj),
             });
         });
     }
@@ -1198,30 +1247,6 @@ fn render_show_detail(
         ]));
     }
 
-    // Latest tags (skip first which is already shown as Version)
-    let tags_joined;
-    if show.versions.len() > 1 {
-        let tags: Vec<&str> = show
-            .versions
-            .iter()
-            .skip(1)
-            .take(10)
-            .map(|s| s.as_str())
-            .collect();
-        tags_joined = tags.join(", ");
-        lines.push(show_field(
-            "Latest tags:",
-            &tags_joined,
-            styles::muted_style(),
-        ));
-        if show.versions.len() > 11 {
-            lines.push(Line::from(Span::styled(
-                format!("  … and {} more", show.versions.len() - 11),
-                styles::muted_style(),
-            )));
-        }
-    }
-
     // Description
     if !show.description.is_empty() {
         lines.extend(crate::ui::text::wrap_field(
@@ -1366,6 +1391,81 @@ fn render_show_detail(
         }
     }
 
+    // Replaces
+    if !show.replaces.is_empty() {
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            format!("Replaces ({})", show.replaces.len()),
+            styles::key_style(),
+        )));
+        let mut deps: Vec<_> = show.replaces.iter().collect();
+        deps.sort_by_key(|(k, _)| k.as_str());
+        for (name, constraint) in deps.iter().take(10) {
+            lines.push(Line::from(vec![
+                Span::styled("  ", Style::default()),
+                Span::styled(name.as_str(), Style::default().fg(theme::COLOR_TEXT)),
+                Span::raw(" "),
+                Span::styled(constraint.as_str(), styles::muted_style()),
+            ]));
+        }
+        if show.replaces.len() > 10 {
+            lines.push(Line::from(Span::styled(
+                format!("  … and {} more", show.replaces.len() - 10),
+                styles::muted_style(),
+            )));
+        }
+    }
+
+    // Provides
+    if !show.provides.is_empty() {
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            format!("Provides ({})", show.provides.len()),
+            styles::key_style(),
+        )));
+        let mut deps: Vec<_> = show.provides.iter().collect();
+        deps.sort_by_key(|(k, _)| k.as_str());
+        for (name, constraint) in deps.iter().take(10) {
+            lines.push(Line::from(vec![
+                Span::styled("  ", Style::default()),
+                Span::styled(name.as_str(), Style::default().fg(theme::COLOR_TEXT)),
+                Span::raw(" "),
+                Span::styled(constraint.as_str(), styles::muted_style()),
+            ]));
+        }
+        if show.provides.len() > 10 {
+            lines.push(Line::from(Span::styled(
+                format!("  … and {} more", show.provides.len() - 10),
+                styles::muted_style(),
+            )));
+        }
+    }
+
+    // Suggests
+    if !show.suggests.is_empty() {
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            format!("Suggests ({})", show.suggests.len()),
+            styles::muted_style(),
+        )));
+        let mut deps: Vec<_> = show.suggests.iter().collect();
+        deps.sort_by_key(|(k, _)| k.as_str());
+        for (name, desc) in deps.iter().take(10) {
+            lines.push(Line::from(vec![
+                Span::styled("  ", Style::default()),
+                Span::styled(name.as_str(), Style::default().fg(theme::COLOR_TEXT)),
+                Span::raw(" "),
+                Span::styled(desc.as_str(), styles::muted_style()),
+            ]));
+        }
+        if show.suggests.len() > 10 {
+            lines.push(Line::from(Span::styled(
+                format!("  … and {} more", show.suggests.len() - 10),
+                styles::muted_style(),
+            )));
+        }
+    }
+
     // Clamp scroll to max
     let total_lines = lines.len() as u16;
     let visible_lines = inner.height;
@@ -1373,6 +1473,29 @@ fn render_show_detail(
     *scroll = (*scroll).min(max_scroll);
 
     let paragraph = ratatui::widgets::Paragraph::new(lines).scroll((*scroll, 0));
+    paragraph.render(inner, buf);
+}
+
+fn render_tags_panel(show: &composer::ShowResult, area: Rect, buf: &mut ratatui::buffer::Buffer) {
+    use ratatui::text::{Line, Span};
+    use ratatui::widgets::Widget;
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme::COLOR_BORDER))
+        .title(Span::styled(
+            format!(" Tags ({}) ", show.versions.len()),
+            styles::title_style(),
+        ));
+    let inner = block.inner(area);
+    block.render(area, buf);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for v in &show.versions {
+        lines.push(Line::from(Span::styled(v, styles::version_style())));
+    }
+
+    let paragraph = Paragraph::new(lines);
     paragraph.render(inner, buf);
 }
 

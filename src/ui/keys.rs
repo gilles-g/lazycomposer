@@ -70,13 +70,13 @@ pub fn default_key_map() -> KeyMap {
             help_desc: "audit".to_string(),
         },
         next_tab: KeyBinding {
-            keys: vec![key(KeyCode::Tab)],
-            help_key: "tab".to_string(),
+            keys: vec![key(KeyCode::Tab), key(KeyCode::Right)],
+            help_key: "tab/→".to_string(),
             help_desc: "next tab".to_string(),
         },
         prev_tab: KeyBinding {
-            keys: vec![key(KeyCode::BackTab)],
-            help_key: "shift+tab".to_string(),
+            keys: vec![key(KeyCode::BackTab), key(KeyCode::Left)],
+            help_key: "shift+tab/←".to_string(),
             help_desc: "prev tab".to_string(),
         },
         up: KeyBinding {
