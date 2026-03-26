@@ -20,8 +20,8 @@ pub struct PackagesPanel {
     pub height: u16,
     filtering: bool,
     filter_text: String,
-    prod_scroll: usize,
-    dev_scroll: usize,
+    pub prod_scroll: usize,
+    pub dev_scroll: usize,
 }
 
 impl Default for PackagesPanel {

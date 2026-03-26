@@ -12,4 +12,4 @@ pub use help::HelpPopup;
 pub use input::InputBox;
 pub use spinner::LoadingSpinner;
 pub use statusbar::{default_hints, Hint, StatusBar};
-pub use tabbar::{render_tab_bar, TAB_BAR_H};
+pub use tabbar::{render_tab_bar, tab_index_at, TAB_BAR_H};

@@ -3,7 +3,9 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
@@ -95,6 +97,12 @@ pub struct App {
     loading_outdated: bool,
     loading_audit: bool,
     resolving_restricted: std::collections::HashSet<String>,
+
+    // Mouse hit zones (updated each render)
+    hit_tab_bar: Rect,
+    hit_prod_inner: Rect,
+    hit_dev_inner: Rect,
+    hit_audit_inner: Rect,
 }
 
 enum PendingAction {
@@ -143,13 +151,21 @@ impl App {
             loading_outdated: false,
             loading_audit: false,
             resolving_restricted: std::collections::HashSet::new(),
+            hit_tab_bar: Rect::default(),
+            hit_prod_inner: Rect::default(),
+            hit_dev_inner: Rect::default(),
+            hit_audit_inner: Rect::default(),
         }
     }
 
     pub fn run(&mut self) -> io::Result<()> {
         crossterm::terminal::enable_raw_mode()?;
         let mut stdout = io::stdout();
-        crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen)?;
+        crossterm::execute!(
+            stdout,
+            crossterm::terminal::EnterAlternateScreen,
+            crossterm::event::EnableMouseCapture
+        )?;
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
@@ -196,6 +212,9 @@ impl App {
                             break;
                         }
                     }
+                    Event::Mouse(mouse) => {
+                        self.handle_mouse(mouse);
+                    }
                     Event::Resize(w, h) => {
                         self.layout = compute_layout(w, h);
                     }
@@ -209,6 +228,7 @@ impl App {
         crossterm::terminal::disable_raw_mode()?;
         crossterm::execute!(
             terminal.backend_mut(),
+            crossterm::event::DisableMouseCapture,
             crossterm::terminal::LeaveAlternateScreen
         )?;
         terminal.show_cursor()?;
@@ -495,12 +515,135 @@ impl App {
         false
     }
 
+    fn handle_mouse(&mut self, mouse: MouseEvent) {
+        // Ignore mouse when dialogs are open
+        if self.confirm.is_visible()
+            || self.choice.is_visible()
+            || self.help.is_visible()
+            || self.input.is_visible()
+            || self.output.is_visible()
+        {
+            return;
+        }
+
+        let col = mouse.column;
+        let row = mouse.row;
+
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                // Tab bar click
+                if row >= self.hit_tab_bar.y && row < self.hit_tab_bar.y + self.hit_tab_bar.height {
+                    if let Some(tab) = tab_index_at(col) {
+                        self.detail_focus = false;
+                        self.show_result = None;
+                        match tab {
+                            TAB_PACKAGES => {
+                                self.active_tab = TAB_PACKAGES;
+                                self.packages.focus_dev = false;
+                            }
+                            TAB_AUDIT => {
+                                self.active_tab = TAB_AUDIT;
+                            }
+                            TAB_PROJECT => {
+                                self.active_tab = TAB_PROJECT;
+                            }
+                            _ => {}
+                        }
+                    }
+                    return;
+                }
+
+                // Prod list click
+                if Self::in_rect(col, row, self.hit_prod_inner) && self.active_tab != TAB_PROJECT {
+                    let rel_y = (row - self.hit_prod_inner.y) as usize;
+                    let idx = self.packages.prod_scroll + rel_y;
+                    if idx < self.packages.prod_items.len() {
+                        self.active_tab = TAB_PACKAGES;
+                        self.packages.focus_dev = false;
+                        self.packages.prod_cursor = idx;
+                        self.detail_focus = false;
+                        self.show_result = None;
+                    }
+                    return;
+                }
+
+                // Dev list click
+                if Self::in_rect(col, row, self.hit_dev_inner) && self.active_tab != TAB_PROJECT {
+                    let rel_y = (row - self.hit_dev_inner.y) as usize;
+                    let idx = self.packages.dev_scroll + rel_y;
+                    if idx < self.packages.dev_items.len() {
+                        self.active_tab = TAB_PACKAGES;
+                        self.packages.focus_dev = true;
+                        self.packages.dev_cursor = idx;
+                        self.detail_focus = false;
+                        self.show_result = None;
+                    }
+                    return;
+                }
+
+                // Audit list click
+                if Self::in_rect(col, row, self.hit_audit_inner) && self.active_tab != TAB_PROJECT {
+                    let rel_y = (row - self.hit_audit_inner.y) as usize;
+                    let idx = self.audit.offset + rel_y;
+                    if idx < self.audit.total_items() {
+                        self.active_tab = TAB_AUDIT;
+                        self.audit.cursor = idx;
+                        self.detail_focus = false;
+                    }
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                if Self::in_rect(col, row, self.hit_prod_inner) {
+                    if self.packages.prod_cursor > 0 {
+                        self.packages.prod_cursor -= 1;
+                    }
+                } else if Self::in_rect(col, row, self.hit_dev_inner) {
+                    if self.packages.dev_cursor > 0 {
+                        self.packages.dev_cursor -= 1;
+                    }
+                } else if Self::in_rect(col, row, self.hit_audit_inner) {
+                    if self.audit.cursor > 0 {
+                        self.audit.cursor -= 1;
+                        if self.audit.cursor < self.audit.offset {
+                            self.audit.offset = self.audit.cursor;
+                        }
+                    }
+                } else if self.detail_focus {
+                    self.detail_scroll = self.detail_scroll.saturating_sub(3);
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                if Self::in_rect(col, row, self.hit_prod_inner) {
+                    if self.packages.prod_cursor + 1 < self.packages.prod_items.len() {
+                        self.packages.prod_cursor += 1;
+                    }
+                } else if Self::in_rect(col, row, self.hit_dev_inner) {
+                    if self.packages.dev_cursor + 1 < self.packages.dev_items.len() {
+                        self.packages.dev_cursor += 1;
+                    }
+                } else if Self::in_rect(col, row, self.hit_audit_inner) {
+                    if self.audit.cursor + 1 < self.audit.total_items() {
+                        self.audit.cursor += 1;
+                    }
+                } else if self.detail_focus {
+                    self.detail_scroll = self.detail_scroll.saturating_add(3);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn in_rect(col: u16, row: u16, rect: Rect) -> bool {
+        col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
+    }
+
     fn render(&mut self, f: &mut ratatui::Frame) {
         let size = f.area();
         self.layout = compute_layout(size.width, size.height);
 
         // Tab bar at the top
         let tab_area = Rect::new(0, 0, size.width, TAB_BAR_H);
+        self.hit_tab_bar = tab_area;
         render_tab_bar(self.active_tab, tab_area, f.buffer_mut());
 
         let content_area = Rect::new(
@@ -618,10 +761,25 @@ impl App {
                 TAB_PACKAGES => {
                     self.packages.set_size(panel_area.width, panel_area.height);
                     self.packages.render(panel_area, f.buffer_mut(), is_active);
+                    // Store hit zones for prod/dev sub-panels (matches render logic)
+                    let half_h = panel_area.height / 2;
+                    let prod_area = Rect::new(panel_area.x, panel_area.y, panel_area.width, half_h);
+                    let dev_area = Rect::new(
+                        panel_area.x,
+                        panel_area.y + half_h,
+                        panel_area.width,
+                        panel_area.height.saturating_sub(half_h),
+                    );
+                    let prod_block = Block::default().borders(Borders::ALL);
+                    let dev_block = Block::default().borders(Borders::ALL);
+                    self.hit_prod_inner = prod_block.inner(prod_area);
+                    self.hit_dev_inner = dev_block.inner(dev_area);
                 }
                 TAB_AUDIT => {
                     self.audit.set_size(panel_area.width, panel_area.height);
                     self.audit.render(panel_area, f.buffer_mut(), is_active);
+                    let audit_block = Block::default().borders(Borders::ALL);
+                    self.hit_audit_inner = audit_block.inner(panel_area);
                 }
                 _ => {}
             }

@@ -43,6 +43,19 @@ pub fn render_tab_bar(active: usize, area: Rect, buf: &mut Buffer) {
     }
 }
 
+/// Returns the tab index at the given column position, or None if outside any tab.
+pub fn tab_index_at(col: u16) -> Option<usize> {
+    let mut x: u16 = 1; // starts at area.x(0) + 1
+    for (i, label) in TAB_LABELS.iter().enumerate() {
+        let tab_width = 1 + label.len() as u16 + 1; // bracket/space + label + bracket/space
+        if col >= x && col < x + tab_width {
+            return Some(i);
+        }
+        x += tab_width + 1; // +1 for spacing
+    }
+    None
+}
+
 /// String-based tab bar view (for tests).
 pub fn tab_bar_view(active: usize) -> String {
     TAB_LABELS
