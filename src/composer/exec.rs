@@ -16,6 +16,22 @@ pub struct StreamLine {
     pub done: bool,
 }
 
+/// StreamHandle holds a stream receiver and the child PID for kill support.
+pub struct StreamHandle {
+    pub rx: mpsc::Receiver<StreamLine>,
+    pub child_pid: Option<u32>,
+}
+
+/// Kills a process by PID using SIGTERM.
+pub fn kill_process(pid: u32) {
+    let _ = std::process::Command::new("kill")
+        .args(["-TERM", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+}
+
 /// RunResult holds the output of a synchronous command.
 pub struct RunResult {
     pub stdout: Vec<u8>,
@@ -26,7 +42,7 @@ pub struct RunResult {
 /// Executor abstracts running composer CLI commands for testability.
 pub trait Executor: Send + Sync {
     fn run(&self, dir: &str, args: &[&str]) -> Result<RunResult, String>;
-    fn stream(&self, dir: &str, args: &[&str]) -> Result<mpsc::Receiver<StreamLine>, String>;
+    fn stream(&self, dir: &str, args: &[&str]) -> Result<StreamHandle, String>;
     fn bin(&self) -> String;
     fn look_path(&self) -> String;
 }
@@ -70,7 +86,7 @@ impl Executor for RealExecutor {
         })
     }
 
-    fn stream(&self, dir: &str, args: &[&str]) -> Result<mpsc::Receiver<StreamLine>, String> {
+    fn stream(&self, dir: &str, args: &[&str]) -> Result<StreamHandle, String> {
         let full_args = self.build_args(args);
 
         // Use `script` to allocate a PTY so composer flushes output in real-time.
@@ -84,11 +100,13 @@ impl Executor for RealExecutor {
         let mut child = Command::new("script")
             .args(["-qefc", &inner_cmd, "/dev/null"])
             .current_dir(dir)
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
             .map_err(|e| e.to_string())?;
 
+        let child_pid = child.id();
         let stdout = child.stdout.take().ok_or("failed to capture stdout")?;
 
         let (tx, rx) = mpsc::channel();
@@ -145,7 +163,10 @@ impl Executor for RealExecutor {
             }
         });
 
-        Ok(rx)
+        Ok(StreamHandle {
+            rx,
+            child_pid: Some(child_pid),
+        })
     }
 
     fn bin(&self) -> String {

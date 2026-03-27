@@ -1,6 +1,4 @@
-use std::sync::mpsc;
-
-use crate::composer::exec::{Executor, StreamLine};
+use crate::composer::exec::{Executor, StreamHandle};
 use crate::composer::types::*;
 use crate::security;
 
@@ -151,20 +149,20 @@ impl Runner {
     }
 
     /// Runs `composer require <pkg>` with streaming output.
-    pub fn require(&self, dir: &str, pkg: &str) -> Result<mpsc::Receiver<StreamLine>, String> {
+    pub fn require(&self, dir: &str, pkg: &str) -> Result<StreamHandle, String> {
         log::info!("running: composer require {pkg} in {dir}");
         self.exec.stream(dir, &["require", pkg])
     }
 
     /// Runs `composer remove <pkg>` with streaming output.
-    pub fn remove(&self, dir: &str, pkg: &str) -> Result<mpsc::Receiver<StreamLine>, String> {
+    pub fn remove(&self, dir: &str, pkg: &str) -> Result<StreamHandle, String> {
         log::info!("running: composer remove {pkg} in {dir}");
         self.exec.stream(dir, &["remove", pkg])
     }
 
     /// Runs `composer update <pkg>` with streaming output.
     /// If pkg is empty, updates all packages.
-    pub fn update(&self, dir: &str, pkg: &str) -> Result<mpsc::Receiver<StreamLine>, String> {
+    pub fn update(&self, dir: &str, pkg: &str) -> Result<StreamHandle, String> {
         let mut args = vec!["update", "--no-interaction"];
         if !pkg.is_empty() {
             args.push(pkg);
@@ -176,13 +174,14 @@ impl Runner {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc;
+
     use super::*;
-    use crate::composer::exec::RunResult;
+    use crate::composer::exec::{RunResult, StreamLine};
 
     struct MockExecutor {
         run_fn: Box<dyn Fn(&str, &[&str]) -> Result<RunResult, String> + Send + Sync>,
-        stream_fn:
-            Box<dyn Fn(&str, &[&str]) -> Result<mpsc::Receiver<StreamLine>, String> + Send + Sync>,
+        stream_fn: Box<dyn Fn(&str, &[&str]) -> Result<StreamHandle, String> + Send + Sync>,
     }
 
     impl Executor for MockExecutor {
@@ -190,7 +189,7 @@ mod tests {
             (self.run_fn)(dir, args)
         }
 
-        fn stream(&self, dir: &str, args: &[&str]) -> Result<mpsc::Receiver<StreamLine>, String> {
+        fn stream(&self, dir: &str, args: &[&str]) -> Result<StreamHandle, String> {
             (self.stream_fn)(dir, args)
         }
 
@@ -213,7 +212,7 @@ mod tests {
     }
 
     fn mock_stream(
-        f: impl Fn(&str, &[&str]) -> Result<mpsc::Receiver<StreamLine>, String> + Send + Sync + 'static,
+        f: impl Fn(&str, &[&str]) -> Result<StreamHandle, String> + Send + Sync + 'static,
     ) -> MockExecutor {
         MockExecutor {
             run_fn: Box::new(|_, _| Err("not implemented".to_string())),
@@ -304,12 +303,15 @@ mod tests {
                 done: true,
             })
             .unwrap();
-            Ok(rx)
+            Ok(StreamHandle {
+                rx,
+                child_pid: None,
+            })
         })));
 
-        let rx = runner.update("/test", "symfony/framework-bundle").unwrap();
+        let handle = runner.update("/test", "symfony/framework-bundle").unwrap();
         let mut lines = 0;
-        for line in rx {
+        for line in handle.rx {
             if !line.done {
                 lines += 1;
             }
@@ -389,12 +391,15 @@ mod tests {
                 done: true,
             })
             .unwrap();
-            Ok(rx)
+            Ok(StreamHandle {
+                rx,
+                child_pid: None,
+            })
         })));
 
-        let rx = runner.require("/test", "vendor/pkg").unwrap();
+        let handle = runner.require("/test", "vendor/pkg").unwrap();
         let mut lines = 0;
-        for line in rx {
+        for line in handle.rx {
             if !line.done {
                 lines += 1;
             }
@@ -426,12 +431,15 @@ mod tests {
                 done: true,
             })
             .unwrap();
-            Ok(rx)
+            Ok(StreamHandle {
+                rx,
+                child_pid: None,
+            })
         })));
 
-        let rx = runner.remove("/test", "vendor/pkg").unwrap();
+        let handle = runner.remove("/test", "vendor/pkg").unwrap();
         let mut lines = 0;
-        for line in rx {
+        for line in handle.rx {
             if !line.done {
                 lines += 1;
             }
@@ -463,12 +471,15 @@ mod tests {
                 done: true,
             })
             .unwrap();
-            Ok(rx)
+            Ok(StreamHandle {
+                rx,
+                child_pid: None,
+            })
         })));
 
-        let rx = runner.update("/test", "").unwrap();
+        let handle = runner.update("/test", "").unwrap();
         let mut lines = 0;
-        for line in rx {
+        for line in handle.rx {
             if !line.done {
                 lines += 1;
             }

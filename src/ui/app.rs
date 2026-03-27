@@ -12,6 +12,7 @@ use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 use ratatui::Terminal;
 
+use crate::composer::exec::kill_process;
 use crate::composer::{self, Runner, StreamLine};
 use crate::security;
 use crate::ui::components::*;
@@ -71,6 +72,7 @@ pub struct App {
     // State
     composer_info: String,
     stream_rx: Option<mpsc::Receiver<StreamLine>>,
+    child_pid: Option<u32>,
     bg_rx: mpsc::Receiver<BgMsg>,
     bg_tx: mpsc::Sender<BgMsg>,
     active_tab: usize,
@@ -131,6 +133,7 @@ impl App {
             spinner: LoadingSpinner::new(),
             composer_info: String::new(),
             stream_rx: None,
+            child_pid: None,
             bg_rx,
             bg_tx,
             active_tab: TAB_PACKAGES,
@@ -200,8 +203,11 @@ impl App {
                 if got_done {
                     self.loading = false;
                     self.stream_rx = None;
+                    self.child_pid = None;
                     self.lock_hash.clear();
                     self.spawn_load_packages();
+                    self.spawn_load_outdated();
+                    self.spawn_load_audit();
                 }
             }
 
@@ -388,12 +394,30 @@ impl App {
             return false;
         }
 
+        // Ctrl+C kills the running process
+        if self.loading
+            && key.code == KeyCode::Char('c')
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            if let Some(pid) = self.child_pid.take() {
+                kill_process(pid);
+            }
+            self.stream_rx = None;
+            self.loading = false;
+            self.output.append_line("⊘ Cancelled");
+            return false;
+        }
+
         if self.output.is_visible() {
             match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => self.output.hide(),
-                _ => {}
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    if !self.loading {
+                        self.output.hide();
+                    }
+                    return false; // absorb q/Esc so we don't quit
+                }
+                _ => {} // let other keys fall through to normal handling
             }
-            return false;
         }
 
         // Filter mode in packages panel
@@ -653,9 +677,7 @@ impl App {
             self.layout.content_h.saturating_sub(TAB_BAR_H),
         );
 
-        if self.output.is_visible() {
-            self.output.render(content_area, f.buffer_mut());
-        } else if self.help.is_visible() {
+        if self.help.is_visible() {
             self.render_panels(f, content_area);
             let dialog_area = centered_rect(60, 20, content_area);
             let text = self.help.view();
@@ -787,7 +809,23 @@ impl App {
             y += h;
         }
 
-        // --- Right column: detail pane + bottom panel (framework or tags) ---
+        // --- Right column: split into main area + output panel (when visible) ---
+        let (main_right_area, output_bottom_area) = if self.output.is_visible() {
+            let output_h = (right_area.height * 4 / 10).max(6).min(right_area.height);
+            let main_h = right_area.height.saturating_sub(output_h);
+            (
+                Rect::new(right_area.x, right_area.y, right_area.width, main_h),
+                Some(Rect::new(
+                    right_area.x,
+                    right_area.y + main_h,
+                    right_area.width,
+                    output_h,
+                )),
+            )
+        } else {
+            (right_area, None)
+        };
+
         let show_matches = self.show_result.as_ref().is_some_and(|sr| {
             let sel = match self.active_tab {
                 TAB_PACKAGES => self.packages.selected_package().map(|p| p.name.as_str()),
@@ -796,27 +834,36 @@ impl App {
             sel.is_some_and(|name| sr.name == name)
         });
 
-        let needs_bottom_panel = show_matches || self.framework_info.is_some();
+        // When output is visible, skip tags/framework bottom panel to save space
+        let needs_bottom_panel =
+            !self.output.is_visible() && (show_matches || self.framework_info.is_some());
         let (detail_area, bottom_area) = if needs_bottom_panel {
             let bottom_h = if show_matches {
                 // Tags panel: larger
-                (right_area.height / 3).max(8).min(right_area.height)
+                (main_right_area.height / 3)
+                    .max(8)
+                    .min(main_right_area.height)
             } else {
                 // Framework panel: compact
-                7u16.min(right_area.height / 3)
+                7u16.min(main_right_area.height / 3)
             };
-            let detail_h = right_area.height.saturating_sub(bottom_h);
+            let detail_h = main_right_area.height.saturating_sub(bottom_h);
             (
-                Rect::new(right_area.x, right_area.y, right_area.width, detail_h),
+                Rect::new(
+                    main_right_area.x,
+                    main_right_area.y,
+                    main_right_area.width,
+                    detail_h,
+                ),
                 Some(Rect::new(
-                    right_area.x,
-                    right_area.y + detail_h,
-                    right_area.width,
+                    main_right_area.x,
+                    main_right_area.y + detail_h,
+                    main_right_area.width,
                     bottom_h,
                 )),
             )
         } else {
-            (right_area, None)
+            (main_right_area, None)
         };
 
         if show_matches {
@@ -867,6 +914,12 @@ impl App {
             } else if let Some(fw) = &self.framework_info {
                 panels::packages::render_framework_panel(fw, area, f.buffer_mut());
             }
+        }
+
+        // Output panel: persistent bottom-right split
+        if let Some(area) = output_bottom_area {
+            self.output.set_size(area.width, area.height);
+            self.output.render(area, f.buffer_mut());
         }
     }
 
@@ -1123,8 +1176,9 @@ impl App {
                 let title = format!("composer require {validated}");
                 self.output.show(&title);
                 match self.runner.require(&self.dir, &validated) {
-                    Ok(rx) => {
-                        self.stream_rx = Some(rx);
+                    Ok(handle) => {
+                        self.stream_rx = Some(handle.rx);
+                        self.child_pid = handle.child_pid;
                         self.loading = true;
                     }
                     Err(e) => {
@@ -1245,11 +1299,15 @@ impl App {
     }
 
     fn exec_remove(&mut self, name: &str) {
+        if self.stream_rx.is_some() {
+            return;
+        }
         let title = format!("composer remove {name}");
         self.output.show(&title);
         match self.runner.remove(&self.dir, name) {
-            Ok(rx) => {
-                self.stream_rx = Some(rx);
+            Ok(handle) => {
+                self.stream_rx = Some(handle.rx);
+                self.child_pid = handle.child_pid;
                 self.loading = true;
             }
             Err(e) => {
@@ -1259,11 +1317,15 @@ impl App {
     }
 
     fn exec_require(&mut self, pkg: &str) {
+        if self.stream_rx.is_some() {
+            return;
+        }
         let title = format!("composer require {pkg}");
         self.output.show(&title);
         match self.runner.require(&self.dir, pkg) {
-            Ok(rx) => {
-                self.stream_rx = Some(rx);
+            Ok(handle) => {
+                self.stream_rx = Some(handle.rx);
+                self.child_pid = handle.child_pid;
                 self.loading = true;
             }
             Err(e) => {
@@ -1273,6 +1335,9 @@ impl App {
     }
 
     fn exec_update(&mut self, name: &str) {
+        if self.stream_rx.is_some() {
+            return;
+        }
         let title = if name.is_empty() {
             "composer update".to_string()
         } else {
@@ -1280,8 +1345,9 @@ impl App {
         };
         self.output.show(&title);
         match self.runner.update(&self.dir, name) {
-            Ok(rx) => {
-                self.stream_rx = Some(rx);
+            Ok(handle) => {
+                self.stream_rx = Some(handle.rx);
+                self.child_pid = handle.child_pid;
                 self.loading = true;
             }
             Err(e) => {
