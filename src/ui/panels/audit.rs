@@ -87,12 +87,18 @@ impl AuditPanel {
                 });
             }
         }
+        self.advisories.sort_by(|a, b| {
+            a.pkg
+                .cmp(&b.pkg)
+                .then_with(|| a.advisory.advisory_id.cmp(&b.advisory.advisory_id))
+        });
         for (pkg, replacement) in &result.abandoned {
             self.abandoned.push(AbandonEntry {
                 pkg: pkg.clone(),
                 replaced_by: replacement.clone().unwrap_or_default(),
             });
         }
+        self.abandoned.sort_by(|a, b| a.pkg.cmp(&b.pkg));
     }
 
     pub fn total_items(&self) -> usize {
