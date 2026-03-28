@@ -44,6 +44,10 @@ enum BgMsg {
         name: String,
         best_version: Option<String>,
     },
+    WhyLoaded {
+        pkg: String,
+        entries: Vec<composer::WhyEntry>,
+    },
     ComposerInfo {
         version: String,
         path: String,
@@ -83,6 +87,7 @@ pub struct App {
     lock_hash: String,
     pending_action: Option<PendingAction>,
     pending_upgrade_target: Option<String>,
+    pending_upgrade_dev: bool,
     show_result: Option<composer::ShowResult>,
     loading_show: bool,
     detail_focus: bool,
@@ -99,6 +104,7 @@ pub struct App {
     loading_outdated: bool,
     loading_audit: bool,
     resolving_restricted: std::collections::HashSet<String>,
+    resolving_why: std::collections::HashSet<String>,
 
     // Mouse hit zones (updated each render)
     hit_tab_bar: Rect,
@@ -144,6 +150,7 @@ impl App {
             lock_hash: String::new(),
             pending_action: None,
             pending_upgrade_target: None,
+            pending_upgrade_dev: false,
             show_result: None,
             loading_show: false,
             detail_focus: false,
@@ -154,6 +161,7 @@ impl App {
             loading_outdated: false,
             loading_audit: false,
             resolving_restricted: std::collections::HashSet::new(),
+            resolving_why: std::collections::HashSet::new(),
             hit_tab_bar: Rect::default(),
             hit_prod_inner: Rect::default(),
             hit_dev_inner: Rect::default(),
@@ -259,6 +267,9 @@ impl App {
                         self.audit_result.as_ref(),
                         self.framework_info.as_ref(),
                     );
+                    self.audit
+                        .update_versions(&self.packages.packages, &self.outdated_result);
+                    self.spawn_load_why_for_transitive();
                     // On reload (after an action), re-fetch outdated/audit if lock changed
                     if !self.lock_hash.is_empty() && lock_hash != self.lock_hash {
                         self.spawn_load_outdated();
@@ -282,6 +293,8 @@ impl App {
                         self.audit_result.as_ref(),
                         self.framework_info.as_ref(),
                     );
+                    self.audit
+                        .update_versions(&self.packages.packages, &self.outdated_result);
                     self.spawn_resolve_all_restricted();
                     if !self.loading_packages && !self.loading_audit {
                         self.spinner.stop();
@@ -298,6 +311,9 @@ impl App {
                     self.loading_audit = false;
                     self.audit.set_audit(Some(&result));
                     self.audit_result = Some(result);
+                    self.audit
+                        .update_versions(&self.packages.packages, &self.outdated_result);
+                    self.spawn_load_why_for_transitive();
                     self.packages.update_statuses(
                         Some(&self.outdated_result),
                         self.audit_result.as_ref(),
@@ -329,6 +345,10 @@ impl App {
                 BgMsg::RestrictedVersionLoaded { name, best_version } => {
                     self.resolving_restricted.remove(&name);
                     self.packages.resolve_restricted(&name, best_version);
+                }
+                BgMsg::WhyLoaded { pkg, entries } => {
+                    self.resolving_why.remove(&pkg);
+                    self.audit.set_why_result(&pkg, entries);
                 }
                 BgMsg::ComposerInfo { version, path } => {
                     self.composer_info = format!("composer {version} ({path})");
@@ -368,8 +388,9 @@ impl App {
                         }
                         'U' => {
                             self.pending_action = None;
+                            let dev = self.pending_upgrade_dev;
                             if let Some(target) = self.pending_upgrade_target.take() {
-                                self.exec_require(&target);
+                                self.exec_upgrade(&target, dev);
                             }
                         }
                         _ => {}
@@ -525,6 +546,14 @@ impl App {
                     self.detail_focus = true;
                     self.detail_scroll = 0;
                 }
+            }
+            KeyCode::Char('o') if self.active_tab == TAB_PACKAGES => {
+                self.packages.toggle_outdated_filter();
+            }
+            KeyCode::Char('R') => {
+                self.spawn_load_packages();
+                self.spawn_load_outdated();
+                self.spawn_load_audit();
             }
             KeyCode::Char('?') => self.help.show(),
             KeyCode::Char('/') if self.active_tab == TAB_PACKAGES => {
@@ -1156,6 +1185,23 @@ impl App {
         });
     }
 
+    fn spawn_load_why_for_transitive(&mut self) {
+        let transitive_pkgs = self.audit.transitive_advisory_packages();
+        for pkg in transitive_pkgs {
+            if self.resolving_why.contains(&pkg) {
+                continue;
+            }
+            self.resolving_why.insert(pkg.clone());
+            let runner = self.runner.clone();
+            let tx = self.bg_tx.clone();
+            let dir = self.dir.clone();
+            thread::spawn(move || {
+                let entries = runner.why(&dir, &pkg).unwrap_or_default();
+                let _ = tx.send(BgMsg::WhyLoaded { pkg, entries });
+            });
+        }
+    }
+
     fn spawn_load_composer_info(&self) {
         let runner = self.runner.clone();
         let tx = self.bg_tx.clone();
@@ -1173,42 +1219,33 @@ impl App {
                 self.output.append_line(&format!("Invalid input: {e}"));
             }
             Ok(validated) => {
-                let title = format!("composer require {validated}");
-                self.output.show(&title);
-                match self.runner.require(&self.dir, &validated) {
-                    Ok(handle) => {
-                        self.stream_rx = Some(handle.rx);
-                        self.child_pid = handle.child_pid;
-                        self.loading = true;
-                    }
-                    Err(e) => {
-                        self.output.append_line(&format!("Error: {e}"));
-                    }
-                }
+                self.exec_require(&validated);
             }
         }
     }
 
     fn handle_update_selected(&mut self) {
-        let (pkg_name, current_version, latest_version, latest_status) = match self.active_tab {
-            TAB_PACKAGES => {
-                if let Some(pkg) = self.packages.selected_package() {
-                    let name = pkg.name.clone();
-                    let version = pkg.version.clone();
-                    // Look up outdated info
-                    let (latest, status) = self
-                        .outdated_result
-                        .iter()
-                        .find(|o| o.name == name)
-                        .map(|o| (o.latest.clone(), o.latest_status.clone()))
-                        .unwrap_or_default();
-                    (Some(name), version, latest, status)
-                } else {
-                    return;
+        let (pkg_name, current_version, latest_version, latest_status, is_dev) =
+            match self.active_tab {
+                TAB_PACKAGES => {
+                    if let Some(pkg) = self.packages.selected_package() {
+                        let name = pkg.name.clone();
+                        let version = pkg.version.clone();
+                        let dev = pkg.is_dev;
+                        // Look up outdated info
+                        let (latest, status) = self
+                            .outdated_result
+                            .iter()
+                            .find(|o| o.name == name)
+                            .map(|o| (o.latest.clone(), o.latest_status.clone()))
+                            .unwrap_or_default();
+                        (Some(name), version, latest, status, dev)
+                    } else {
+                        return;
+                    }
                 }
-            }
-            _ => return,
-        };
+                _ => return,
+            };
 
         let name = match pkg_name {
             Some(n) => n,
@@ -1256,6 +1293,7 @@ impl App {
             self.pending_action = Some(PendingAction::Update(name.clone()));
             // Store upgrade target separately
             self.pending_upgrade_target = Some(format!("{}:{}", name, major_constraint));
+            self.pending_upgrade_dev = is_dev;
             return;
         }
 
@@ -1323,6 +1361,25 @@ impl App {
         let title = format!("composer require {pkg}");
         self.output.show(&title);
         match self.runner.require(&self.dir, pkg) {
+            Ok(handle) => {
+                self.stream_rx = Some(handle.rx);
+                self.child_pid = handle.child_pid;
+                self.loading = true;
+            }
+            Err(e) => {
+                self.output.append_line(&format!("Error: {e}"));
+            }
+        }
+    }
+
+    fn exec_upgrade(&mut self, pkg: &str, dev: bool) {
+        if self.stream_rx.is_some() {
+            return;
+        }
+        let dev_flag = if dev { " --dev" } else { "" };
+        let title = format!("composer require --update-with-all-dependencies{dev_flag} {pkg}");
+        self.output.show(&title);
+        match self.runner.upgrade(&self.dir, pkg, dev) {
             Ok(handle) => {
                 self.stream_rx = Some(handle.rx);
                 self.child_pid = handle.child_pid;

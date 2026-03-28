@@ -148,16 +148,71 @@ impl Runner {
         })
     }
 
+    /// Runs `composer depends <pkg>` and parses the text output.
+    /// Output format: `name  version  requires|conflicts  pkg (constraint)`
+    pub fn why(&self, dir: &str, pkg: &str) -> Result<Vec<WhyEntry>, String> {
+        log::debug!("running: composer depends {pkg} in {dir}");
+        let result = self
+            .exec
+            .run(dir, &["depends", pkg])
+            .map_err(|e| format!("running composer depends: {e}"))?;
+
+        log::debug!(
+            "composer depends exit={} stdout={} bytes",
+            result.exit_code,
+            result.stdout.len()
+        );
+
+        if result.stdout.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let output = String::from_utf8_lossy(&result.stdout);
+        let entries = output
+            .lines()
+            .filter_map(|line| {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 3 {
+                    Some(WhyEntry {
+                        name: parts[0].to_string(),
+                        version: parts[1].to_string(),
+                        constraint: parts[2..].join(" "),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        Ok(entries)
+    }
+
     /// Runs `composer require <pkg>` with streaming output.
     pub fn require(&self, dir: &str, pkg: &str) -> Result<StreamHandle, String> {
-        log::info!("running: composer require {pkg} in {dir}");
-        self.exec.stream(dir, &["require", pkg])
+        log::info!("running: composer require {pkg} --no-interaction in {dir}");
+        self.exec.stream(dir, &["require", "--no-interaction", pkg])
+    }
+
+    /// Runs `composer require <pkg> --update-with-all-dependencies` for major upgrades.
+    /// If `dev` is true, adds `--dev` to install as a dev dependency.
+    pub fn upgrade(&self, dir: &str, pkg: &str, dev: bool) -> Result<StreamHandle, String> {
+        let mut args = vec![
+            "require",
+            "--no-interaction",
+            "--update-with-all-dependencies",
+        ];
+        if dev {
+            args.push("--dev");
+        }
+        args.push(pkg);
+        log::info!("running: composer {} in {dir}", args.join(" "));
+        self.exec.stream(dir, &args)
     }
 
     /// Runs `composer remove <pkg>` with streaming output.
     pub fn remove(&self, dir: &str, pkg: &str) -> Result<StreamHandle, String> {
-        log::info!("running: composer remove {pkg} in {dir}");
-        self.exec.stream(dir, &["remove", pkg])
+        log::info!("running: composer remove {pkg} --no-interaction in {dir}");
+        self.exec.stream(dir, &["remove", "--no-interaction", pkg])
     }
 
     /// Runs `composer update <pkg>` with streaming output.
@@ -629,6 +684,52 @@ mod tests {
         let result = runner.show_all("/test", "symfony/console").unwrap();
         assert_eq!(result.name, "symfony/console");
         assert_eq!(result.versions.len(), 5);
+    }
+
+    #[test]
+    fn runner_why() {
+        let output = b"symfony/twig-bundle v7.2.4 requires twig/twig (^3.12)\n";
+        let runner = Runner::new(Box::new(mock_run(move |_, _| {
+            Ok(RunResult {
+                stdout: output.to_vec(),
+                stderr: vec![],
+                exit_code: 0,
+            })
+        })));
+        let entries = runner.why("/test", "twig/twig").unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "symfony/twig-bundle");
+        assert_eq!(entries[0].version, "v7.2.4");
+        assert_eq!(entries[0].constraint, "requires twig/twig (^3.12)");
+    }
+
+    #[test]
+    fn runner_why_multiple() {
+        let output = b"google/apiclient v2.17.0 requires firebase/php-jwt (^6.0)\ngoogle/auth      v1.42.0 requires firebase/php-jwt (^6.0)\n";
+        let runner = Runner::new(Box::new(mock_run(move |_, _| {
+            Ok(RunResult {
+                stdout: output.to_vec(),
+                stderr: vec![],
+                exit_code: 0,
+            })
+        })));
+        let entries = runner.why("/test", "firebase/php-jwt").unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "google/apiclient");
+        assert_eq!(entries[1].name, "google/auth");
+    }
+
+    #[test]
+    fn runner_why_empty() {
+        let runner = Runner::new(Box::new(mock_run(|_, _| {
+            Ok(RunResult {
+                stdout: vec![],
+                stderr: vec![],
+                exit_code: 0,
+            })
+        })));
+        let entries = runner.why("/test", "unknown/pkg").unwrap();
+        assert!(entries.is_empty());
     }
 
     #[test]

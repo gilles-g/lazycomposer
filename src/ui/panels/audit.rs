@@ -5,7 +5,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
-use crate::composer::{Advisory, AuditResult};
+use crate::composer::{Advisory, AuditResult, OutdatedPackage, Package, WhyEntry};
 use crate::ui::style::{styles, theme};
 use crate::ui::text::wrap_field;
 
@@ -14,6 +14,10 @@ pub enum SelectedAuditEntry<'a> {
     Advisory {
         pkg: &'a str,
         advisory: &'a Advisory,
+        installed_version: &'a str,
+        latest_version: &'a str,
+        is_direct: bool,
+        required_by: &'a [WhyEntry],
     },
     Abandoned {
         pkg: &'a str,
@@ -24,6 +28,10 @@ pub enum SelectedAuditEntry<'a> {
 struct AdvisoryEntry {
     pkg: String,
     advisory: Advisory,
+    installed_version: String,
+    latest_version: String,
+    is_direct: bool,
+    required_by: Vec<WhyEntry>,
 }
 
 struct AbandonEntry {
@@ -72,6 +80,10 @@ impl AuditPanel {
                 self.advisories.push(AdvisoryEntry {
                     pkg: pkg.clone(),
                     advisory: adv.clone(),
+                    installed_version: String::new(),
+                    latest_version: String::new(),
+                    is_direct: false,
+                    required_by: vec![],
                 });
             }
         }
@@ -92,12 +104,56 @@ impl AuditPanel {
         self.height = height;
     }
 
+    /// Update installed/latest version info by cross-referencing with packages and outdated data.
+    pub fn update_versions(&mut self, packages: &[Package], outdated: &[OutdatedPackage]) {
+        for entry in &mut self.advisories {
+            // Find installed version from packages (only direct deps are in this list)
+            if let Some(pkg) = packages.iter().find(|p| p.name == entry.pkg) {
+                entry.installed_version = pkg.version.clone();
+                entry.is_direct = true;
+            } else {
+                entry.is_direct = false;
+            }
+            // Find latest version from outdated data
+            if let Some(out) = outdated.iter().find(|o| o.name == entry.pkg) {
+                if entry.installed_version.is_empty() {
+                    entry.installed_version = out.version.clone();
+                }
+                entry.latest_version = out.latest.clone();
+            }
+        }
+    }
+
+    /// Returns package names of advisories that are transitive (not direct deps).
+    pub fn transitive_advisory_packages(&self) -> Vec<String> {
+        self.advisories
+            .iter()
+            .filter(|e| !e.is_direct)
+            .map(|e| e.pkg.clone())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    /// Update the "required by" info for a transitive advisory package.
+    pub fn set_why_result(&mut self, pkg: &str, entries: Vec<WhyEntry>) {
+        for advisory in &mut self.advisories {
+            if advisory.pkg == pkg {
+                advisory.required_by = entries.clone();
+            }
+        }
+    }
+
     pub fn selected_entry(&self) -> Option<SelectedAuditEntry<'_>> {
         if self.cursor < self.advisories.len() {
             let entry = &self.advisories[self.cursor];
             return Some(SelectedAuditEntry::Advisory {
                 pkg: &entry.pkg,
                 advisory: &entry.advisory,
+                installed_version: &entry.installed_version,
+                latest_version: &entry.latest_version,
+                is_direct: entry.is_direct,
+                required_by: &entry.required_by,
             });
         }
         let abandon_idx = self.cursor - self.advisories.len();
@@ -184,16 +240,35 @@ impl AuditPanel {
                     .as_deref()
                     .filter(|s| !s.is_empty())
                     .unwrap_or(&entry.advisory.advisory_id);
-                lines.push(Line::from(vec![
+                let mut spans = vec![
                     cursor,
                     Span::styled(cve.to_string(), styles::error_style()),
                     Span::raw(" "),
                     Span::raw(&entry.pkg),
-                ]));
-                lines.push(Line::from(vec![
-                    Span::raw("    "),
-                    Span::raw(&entry.advisory.title),
-                ]));
+                ];
+                if !entry.installed_version.is_empty() {
+                    spans.push(Span::styled(
+                        format!(" ({})", entry.installed_version),
+                        styles::muted_style(),
+                    ));
+                    if !entry.latest_version.is_empty() {
+                        spans.push(Span::styled(
+                            format!(" → {}", entry.latest_version),
+                            styles::version_style(),
+                        ));
+                    }
+                }
+                lines.push(Line::from(spans));
+                let mut detail_spans = vec![Span::raw("    "), Span::raw(&entry.advisory.title)];
+                if !entry.is_direct && !entry.required_by.is_empty() {
+                    let names: Vec<&str> =
+                        entry.required_by.iter().map(|w| w.name.as_str()).collect();
+                    detail_spans.push(Span::styled(
+                        format!("  via {}", names.join(", ")),
+                        styles::warning_style(),
+                    ));
+                }
+                lines.push(Line::from(detail_spans));
                 item_idx += 1;
             }
         }
@@ -253,7 +328,15 @@ impl AuditPanel {
                     .as_deref()
                     .filter(|s| !s.is_empty())
                     .unwrap_or(&entry.advisory.advisory_id);
-                b.push_str(&format!("{cursor}{cve} {}\n", entry.pkg));
+                let mut line = format!("{cursor}{cve} {}", entry.pkg);
+                if !entry.installed_version.is_empty() {
+                    line.push_str(&format!(" ({})", entry.installed_version));
+                    if !entry.latest_version.is_empty() {
+                        line.push_str(&format!(" → {}", entry.latest_version));
+                    }
+                }
+                b.push_str(&line);
+                b.push('\n');
                 b.push_str(&format!("    {}\n", entry.advisory.title));
                 item_idx += 1;
             }
@@ -310,9 +393,22 @@ pub fn render_audit_detail(
     };
 
     let lines = match entry {
-        SelectedAuditEntry::Advisory { pkg, advisory } => {
-            build_advisory_detail_lines(pkg, advisory, inner.width)
-        }
+        SelectedAuditEntry::Advisory {
+            pkg,
+            advisory,
+            installed_version,
+            latest_version,
+            is_direct,
+            required_by,
+        } => build_advisory_detail_lines(
+            pkg,
+            advisory,
+            installed_version,
+            latest_version,
+            is_direct,
+            required_by,
+            inner.width,
+        ),
         SelectedAuditEntry::Abandoned { pkg, replaced_by } => {
             build_abandoned_detail_lines(pkg, replaced_by)
         }
@@ -343,6 +439,10 @@ fn severity_style(severity: &str) -> Style {
 fn build_advisory_detail_lines<'a>(
     pkg: &'a str,
     advisory: &'a Advisory,
+    installed_version: &'a str,
+    latest_version: &'a str,
+    is_direct: bool,
+    required_by: &'a [WhyEntry],
     width: u16,
 ) -> Vec<Line<'a>> {
     let mut lines: Vec<Line> = vec![
@@ -386,6 +486,50 @@ fn build_advisory_detail_lines<'a>(
             Span::styled("Affected:  ", styles::key_style()),
             Span::styled(&advisory.affected_versions, styles::warning_style()),
         ]));
+    }
+
+    // Installed version
+    if !installed_version.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("Installed: ", styles::key_style()),
+            Span::styled(installed_version, styles::error_style()),
+        ]));
+    }
+
+    // Latest available version (fix target)
+    if !latest_version.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("Update to: ", styles::key_style()),
+            Span::styled(latest_version, styles::version_style()),
+        ]));
+    }
+
+    // Dependency type
+    if !is_direct && !required_by.is_empty() {
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            "⚑ Transitive dependency",
+            styles::warning_style(),
+        )));
+        for why_entry in required_by {
+            let mut spans: Vec<Span> = vec![
+                Span::styled("  Required by: ", styles::key_style()),
+                Span::styled(why_entry.name.as_str(), styles::version_style()),
+            ];
+            if !why_entry.version.is_empty() {
+                spans.push(Span::styled(
+                    format!(" ({})", why_entry.version),
+                    styles::muted_style(),
+                ));
+            }
+            lines.push(Line::from(spans));
+        }
+    } else if !is_direct {
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            "⚑ Transitive dependency (loading...)",
+            styles::warning_style(),
+        )));
     }
 
     // Reported at
@@ -728,5 +872,180 @@ mod tests {
         p.set_size(100, 50);
         assert_eq!(p.width, 100);
         assert_eq!(p.height, 50);
+    }
+    #[test]
+    fn update_versions_direct_dep() {
+        let mut p = AuditPanel::new();
+        p.set_audit(Some(&AuditResult {
+            advisories: [(
+                "vendor/pkg".to_string(),
+                vec![Advisory {
+                    advisory_id: "ADV-001".to_string(),
+                    title: "Bug".to_string(),
+                    ..Default::default()
+                }],
+            )]
+            .into_iter()
+            .collect(),
+            abandoned: Default::default(),
+        }));
+        let packages = vec![Package {
+            name: "vendor/pkg".to_string(),
+            version: "1.0.0".to_string(),
+            ..Default::default()
+        }];
+        let outdated = vec![OutdatedPackage {
+            name: "vendor/pkg".to_string(),
+            version: "1.0.0".to_string(),
+            latest: "2.0.0".to_string(),
+            ..Default::default()
+        }];
+        p.update_versions(&packages, &outdated);
+        match p.selected_entry() {
+            Some(SelectedAuditEntry::Advisory {
+                installed_version,
+                latest_version,
+                is_direct,
+                ..
+            }) => {
+                assert_eq!(installed_version, "1.0.0");
+                assert_eq!(latest_version, "2.0.0");
+                assert!(is_direct);
+            }
+            _ => panic!("expected advisory entry"),
+        }
+    }
+    #[test]
+    fn update_versions_transitive_dep() {
+        let mut p = AuditPanel::new();
+        p.set_audit(Some(&AuditResult {
+            advisories: [(
+                "transitive/pkg".to_string(),
+                vec![Advisory {
+                    advisory_id: "ADV-001".to_string(),
+                    title: "Bug".to_string(),
+                    ..Default::default()
+                }],
+            )]
+            .into_iter()
+            .collect(),
+            abandoned: Default::default(),
+        }));
+        let packages = vec![Package {
+            name: "other/pkg".to_string(),
+            version: "1.0.0".to_string(),
+            ..Default::default()
+        }];
+        p.update_versions(&packages, &[]);
+        match p.selected_entry() {
+            Some(SelectedAuditEntry::Advisory { is_direct, .. }) => {
+                assert!(!is_direct);
+            }
+            _ => panic!("expected advisory entry"),
+        }
+    }
+    #[test]
+    fn transitive_advisory_packages_list() {
+        let mut p = AuditPanel::new();
+        p.set_audit(Some(&AuditResult {
+            advisories: [
+                (
+                    "direct/pkg".to_string(),
+                    vec![Advisory {
+                        advisory_id: "ADV-001".to_string(),
+                        title: "Bug".to_string(),
+                        ..Default::default()
+                    }],
+                ),
+                (
+                    "transitive/pkg".to_string(),
+                    vec![Advisory {
+                        advisory_id: "ADV-002".to_string(),
+                        title: "Bug2".to_string(),
+                        ..Default::default()
+                    }],
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            abandoned: Default::default(),
+        }));
+        let packages = vec![Package {
+            name: "direct/pkg".to_string(),
+            version: "1.0.0".to_string(),
+            ..Default::default()
+        }];
+        p.update_versions(&packages, &[]);
+        let transitive = p.transitive_advisory_packages();
+        assert_eq!(transitive.len(), 1);
+        assert_eq!(transitive[0], "transitive/pkg");
+    }
+    #[test]
+    fn set_why_result_updates_entries() {
+        let mut p = AuditPanel::new();
+        p.set_audit(Some(&AuditResult {
+            advisories: [(
+                "transitive/pkg".to_string(),
+                vec![Advisory {
+                    advisory_id: "ADV-001".to_string(),
+                    title: "Bug".to_string(),
+                    ..Default::default()
+                }],
+            )]
+            .into_iter()
+            .collect(),
+            abandoned: Default::default(),
+        }));
+        p.update_versions(&[], &[]);
+        p.set_why_result(
+            "transitive/pkg",
+            vec![WhyEntry {
+                name: "parent/pkg".to_string(),
+                version: "3.0.0".to_string(),
+                constraint: "requires transitive/pkg (^1.0)".to_string(),
+            }],
+        );
+        match p.selected_entry() {
+            Some(SelectedAuditEntry::Advisory {
+                is_direct,
+                required_by,
+                ..
+            }) => {
+                assert!(!is_direct);
+                assert_eq!(required_by.len(), 1);
+                assert_eq!(required_by[0].name, "parent/pkg");
+            }
+            _ => panic!("expected advisory entry"),
+        }
+    }
+    #[test]
+    fn view_with_transitive_shows_via() {
+        let mut p = AuditPanel::new();
+        p.set_size(80, 40);
+        p.set_audit(Some(&AuditResult {
+            advisories: [(
+                "transitive/pkg".to_string(),
+                vec![Advisory {
+                    advisory_id: "ADV-001".to_string(),
+                    title: "Critical XSS".to_string(),
+                    cve: Some("CVE-2024-0001".to_string()),
+                    ..Default::default()
+                }],
+            )]
+            .into_iter()
+            .collect(),
+            abandoned: Default::default(),
+        }));
+        p.update_versions(&[], &[]);
+        p.set_why_result(
+            "transitive/pkg",
+            vec![WhyEntry {
+                name: "parent/pkg".to_string(),
+                version: "3.0.0".to_string(),
+                constraint: String::new(),
+            }],
+        );
+        let view = p.view(true);
+        assert!(view.contains("transitive/pkg"));
     }
 }

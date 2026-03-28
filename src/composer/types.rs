@@ -459,6 +459,14 @@ pub struct ShowResult {
     pub suggests: HashMap<String, String>,
 }
 
+/// WhyEntry represents a single dependency chain entry from `composer why/depends`.
+#[derive(Debug, Clone, Default)]
+pub struct WhyEntry {
+    pub name: String,
+    pub version: String,
+    pub constraint: String,
+}
+
 /// Advisory is a security advisory for a package.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Advisory {
