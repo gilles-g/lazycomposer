@@ -115,6 +115,10 @@ fn help_sections() -> Vec<HelpSection> {
                     desc: "show package details".to_string(),
                 },
                 Hint {
+                    key: "o".to_string(),
+                    desc: "toggle outdated filter".to_string(),
+                },
+                Hint {
                     key: "/".to_string(),
                     desc: "search / filter".to_string(),
                 },
@@ -128,11 +132,19 @@ fn help_sections() -> Vec<HelpSection> {
                     desc: "update all packages".to_string(),
                 },
                 Hint {
+                    key: "R".to_string(),
+                    desc: "refresh all data".to_string(),
+                },
+                Hint {
+                    key: "ctrl+c".to_string(),
+                    desc: "cancel running command".to_string(),
+                },
+                Hint {
                     key: "?".to_string(),
                     desc: "show this help".to_string(),
                 },
                 Hint {
-                    key: "q / ctrl+c".to_string(),
+                    key: "q".to_string(),
                     desc: "quit".to_string(),
                 },
             ],

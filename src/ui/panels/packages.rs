@@ -20,6 +20,7 @@ pub struct PackagesPanel {
     pub height: u16,
     filtering: bool,
     filter_text: String,
+    filter_outdated: bool,
     pub prod_scroll: usize,
     pub dev_scroll: usize,
 }
@@ -43,6 +44,7 @@ impl PackagesPanel {
             height: 0,
             filtering: false,
             filter_text: String::new(),
+            filter_outdated: false,
             prod_scroll: 0,
             dev_scroll: 0,
         }
@@ -59,6 +61,9 @@ impl PackagesPanel {
         let filter = self.filter_text.to_lowercase();
         for (i, pkg) in self.packages.iter().enumerate() {
             if !filter.is_empty() && !pkg.name.to_lowercase().contains(&filter) {
+                continue;
+            }
+            if self.filter_outdated && pkg.status == PackageStatus::OK {
                 continue;
             }
             if pkg.is_dev {
@@ -182,6 +187,15 @@ impl PackagesPanel {
         self.filtering
     }
 
+    pub fn toggle_outdated_filter(&mut self) {
+        self.filter_outdated = !self.filter_outdated;
+        self.rebuild_lists();
+    }
+
+    pub fn is_outdated_filter(&self) -> bool {
+        self.filter_outdated
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) {
         // Filter mode input handling
         if self.filtering {
@@ -268,6 +282,8 @@ impl PackagesPanel {
         let prod_title = if !self.filter_text.is_empty() || self.filtering {
             let filter_indicator = if self.filtering { "/" } else { "" };
             format!(" require [{}{}] ", filter_indicator, self.filter_text)
+        } else if self.filter_outdated {
+            " require [outdated] ".to_string()
         } else {
             " require ".to_string()
         };
@@ -291,7 +307,14 @@ impl PackagesPanel {
         let dev_block = Block::default()
             .borders(Borders::ALL)
             .border_style(dev_border_style)
-            .title(Span::styled(" require-dev ", styles::dev_style()));
+            .title(Span::styled(
+                if self.filter_outdated {
+                    " require-dev [outdated] "
+                } else {
+                    " require-dev "
+                },
+                styles::dev_style(),
+            ));
         let dev_inner = dev_block.inner(dev_area);
         dev_block.render(dev_area, buf);
         let dev_items = self.dev_items.clone();
