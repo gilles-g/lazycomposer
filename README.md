@@ -40,6 +40,19 @@ Built with [ratatui](https://ratatui.rs) + [crossterm](https://github.com/crosst
 
 ## Installation
 
+### From GitHub releases (recommended)
+
+Pre-built binaries are available on the [releases page](https://github.com/gilles-g/lazycomposer/releases).
+
+Download the archive matching your platform, extract it, and move the binary to a directory in your `PATH`:
+
+```bash
+# Example for Linux x86_64 — adjust the version and asset name as needed
+curl -L https://github.com/gilles-g/lazycomposer/releases/latest/download/lazycomposer-linux-x86_64.tar.gz \
+  | tar -xz
+mv lazycomposer ~/.local/bin/
+```
+
 ### From source
 
 ```bash
