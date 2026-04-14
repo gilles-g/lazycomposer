@@ -136,6 +136,10 @@ fn help_sections() -> Vec<HelpSection> {
                     desc: "refresh all data".to_string(),
                 },
                 Hint {
+                    key: "ctrl+n".to_string(),
+                    desc: "resize panels (arrows to adjust, esc to exit)".to_string(),
+                },
+                Hint {
                     key: "ctrl+c".to_string(),
                     desc: "cancel running command".to_string(),
                 },

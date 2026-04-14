@@ -16,7 +16,9 @@ use crate::composer::exec::kill_process;
 use crate::composer::{self, Runner, StreamLine};
 use crate::security;
 use crate::ui::components::*;
-use crate::ui::layout::{compute_layout, COLLAPSED_PANEL_H};
+use crate::ui::layout::{
+    adjust_ratio, compute_layout, COLLAPSED_PANEL_H, DEFAULT_LEFT_PANEL_RATIO, DEFAULT_LEFT_RATIO,
+};
 use crate::ui::messages::Action;
 use crate::ui::panels;
 use crate::ui::style::{styles, theme};
@@ -106,6 +108,11 @@ pub struct App {
     resolving_restricted: std::collections::HashSet<String>,
     resolving_why: std::collections::HashSet<String>,
 
+    // Resize mode
+    resize_mode: bool,
+    left_ratio: f64,
+    left_panel_ratio: f64,
+
     // Mouse hit zones (updated each render)
     hit_tab_bar: Rect,
     hit_prod_inner: Rect,
@@ -162,6 +169,9 @@ impl App {
             loading_audit: false,
             resolving_restricted: std::collections::HashSet::new(),
             resolving_why: std::collections::HashSet::new(),
+            resize_mode: false,
+            left_ratio: DEFAULT_LEFT_RATIO,
+            left_panel_ratio: DEFAULT_LEFT_PANEL_RATIO,
             hit_tab_bar: Rect::default(),
             hit_prod_inner: Rect::default(),
             hit_dev_inner: Rect::default(),
@@ -230,7 +240,7 @@ impl App {
                         self.handle_mouse(mouse);
                     }
                     Event::Resize(w, h) => {
-                        self.layout = compute_layout(w, h);
+                        self.layout = compute_layout(w, h, self.left_ratio);
                     }
                     _ => {}
                 }
@@ -429,6 +439,44 @@ impl App {
             return false;
         }
 
+        // Resize mode — adjust panel ratios with arrow keys (before output/filter checks)
+        if self.resize_mode {
+            match key.code {
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return true,
+                KeyCode::Char('q') => return true,
+                KeyCode::Esc | KeyCode::Enter => {
+                    self.resize_mode = false;
+                }
+                KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.resize_mode = false;
+                }
+                KeyCode::Left => {
+                    self.left_ratio = adjust_ratio(self.left_ratio, false);
+                    self.layout = compute_layout(
+                        self.layout.width,
+                        self.layout.height,
+                        self.left_ratio,
+                    );
+                }
+                KeyCode::Right => {
+                    self.left_ratio = adjust_ratio(self.left_ratio, true);
+                    self.layout = compute_layout(
+                        self.layout.width,
+                        self.layout.height,
+                        self.left_ratio,
+                    );
+                }
+                KeyCode::Up => {
+                    self.left_panel_ratio = adjust_ratio(self.left_panel_ratio, false);
+                }
+                KeyCode::Down => {
+                    self.left_panel_ratio = adjust_ratio(self.left_panel_ratio, true);
+                }
+                _ => {}
+            }
+            return false;
+        }
+
         if self.output.is_visible() {
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => {
@@ -478,6 +526,9 @@ impl App {
         match key.code {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return true,
             KeyCode::Char('q') => return true,
+            KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.resize_mode = true;
+            }
             KeyCode::Tab | KeyCode::Right => {
                 if self.active_tab == TAB_PACKAGES && !self.packages.focus_dev {
                     // require → require-dev
@@ -692,7 +743,7 @@ impl App {
 
     fn render(&mut self, f: &mut ratatui::Frame) {
         let size = f.area();
-        self.layout = compute_layout(size.width, size.height);
+        self.layout = compute_layout(size.width, size.height, self.left_ratio);
 
         // Tab bar at the top
         let tab_area = Rect::new(0, 0, size.width, TAB_BAR_H);
@@ -795,9 +846,9 @@ impl App {
         let right_area = chunks[1];
 
         // --- Left column: 2 stacked cards (lazygit-style) ---
-        // Active panel: 70% height, inactive panel: 30%
+        // Active panel: adjustable ratio, inactive panel: remainder
         let total_h = left_area.height;
-        let active_h = (total_h * 7 / 10).max(COLLAPSED_PANEL_H);
+        let active_h = ((total_h as f64 * self.left_panel_ratio) as u16).max(COLLAPSED_PANEL_H);
         let inactive_h = total_h.saturating_sub(active_h);
 
         let panel_tabs = [TAB_PACKAGES, TAB_AUDIT];
@@ -989,7 +1040,22 @@ impl App {
         }
 
         // Hints
-        let hints = if self.output.is_visible() {
+        let hints = if self.resize_mode {
+            vec![
+                Hint {
+                    key: "←/→".to_string(),
+                    desc: "width".to_string(),
+                },
+                Hint {
+                    key: "↑/↓".to_string(),
+                    desc: "height".to_string(),
+                },
+                Hint {
+                    key: "esc".to_string(),
+                    desc: "done".to_string(),
+                },
+            ]
+        } else if self.output.is_visible() {
             vec![Hint {
                 key: "q/esc".to_string(),
                 desc: "back".to_string(),
