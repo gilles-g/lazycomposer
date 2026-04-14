@@ -488,6 +488,13 @@ pub struct Advisory {
     pub severity: Option<String>,
 }
 
+/// Response from the Packagist security advisories API.
+/// Used for checking CVEs on `composer/composer` itself.
+#[derive(Debug, Deserialize)]
+pub struct PackagistAdvisoriesResponse {
+    pub advisories: HashMap<String, Vec<Advisory>>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,3 +1,5 @@
+use std::process::{Command, Stdio};
+
 use crate::composer::exec::{Executor, StreamHandle};
 use crate::composer::types::*;
 use crate::security;
@@ -213,6 +215,56 @@ impl Runner {
     pub fn remove(&self, dir: &str, pkg: &str) -> Result<StreamHandle, String> {
         log::info!("running: composer remove {pkg} --no-interaction in {dir}");
         self.exec.stream(dir, &["remove", "--no-interaction", pkg])
+    }
+
+    /// Fetches security advisories for `composer/composer` itself from Packagist API.
+    /// Returns only advisories that affect the given version.
+    pub fn self_audit(&self, version: &str) -> Vec<Advisory> {
+        let url = "https://packagist.org/api/security-advisories/?packages[]=composer/composer";
+
+        log::debug!("fetching composer self-audit from {url}");
+
+        let output = match Command::new("curl")
+            .args(["-sf", "--max-time", "10", url])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+        {
+            Ok(o) if o.status.success() => o.stdout,
+            Ok(_) => {
+                log::warn!("curl failed for composer self-audit");
+                return vec![];
+            }
+            Err(e) => {
+                log::warn!("curl not available for composer self-audit: {e}");
+                return vec![];
+            }
+        };
+
+        let response: PackagistAdvisoriesResponse = match serde_json::from_slice(&output) {
+            Ok(r) => r,
+            Err(e) => {
+                log::warn!("failed to parse packagist advisories: {e}");
+                return vec![];
+            }
+        };
+
+        response
+            .advisories
+            .get("composer/composer")
+            .map(|advisories| {
+                advisories
+                    .iter()
+                    .filter(|a| {
+                        crate::composer::parser::version_matches_affected(
+                            version,
+                            &a.affected_versions,
+                        )
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Runs `composer update <pkg>` with streaming output.

@@ -54,6 +54,7 @@ enum BgMsg {
         version: String,
         path: String,
     },
+    ComposerSelfAudit(Vec<composer::Advisory>),
 }
 
 pub struct App {
@@ -77,6 +78,8 @@ pub struct App {
 
     // State
     composer_info: String,
+    composer_version: String,
+    composer_self_advisories: Vec<composer::Advisory>,
     stream_rx: Option<mpsc::Receiver<StreamLine>>,
     child_pid: Option<u32>,
     bg_rx: mpsc::Receiver<BgMsg>,
@@ -145,6 +148,8 @@ impl App {
             input: InputBox::new(),
             spinner: LoadingSpinner::new(),
             composer_info: String::new(),
+            composer_version: String::new(),
+            composer_self_advisories: vec![],
             stream_rx: None,
             child_pid: None,
             bg_rx,
@@ -362,6 +367,11 @@ impl App {
                 }
                 BgMsg::ComposerInfo { version, path } => {
                     self.composer_info = format!("composer {version} ({path})");
+                    self.composer_version = version.clone();
+                    self.spawn_self_audit(version);
+                }
+                BgMsg::ComposerSelfAudit(advisories) => {
+                    self.composer_self_advisories = advisories;
                 }
             }
         }
@@ -452,19 +462,13 @@ impl App {
                 }
                 KeyCode::Left => {
                     self.left_ratio = adjust_ratio(self.left_ratio, false);
-                    self.layout = compute_layout(
-                        self.layout.width,
-                        self.layout.height,
-                        self.left_ratio,
-                    );
+                    self.layout =
+                        compute_layout(self.layout.width, self.layout.height, self.left_ratio);
                 }
                 KeyCode::Right => {
                     self.left_ratio = adjust_ratio(self.left_ratio, true);
-                    self.layout = compute_layout(
-                        self.layout.width,
-                        self.layout.height,
-                        self.left_ratio,
-                    );
+                    self.layout =
+                        compute_layout(self.layout.width, self.layout.height, self.left_ratio);
                 }
                 KeyCode::Up => {
                     self.left_panel_ratio = adjust_ratio(self.left_panel_ratio, false);
@@ -1075,12 +1079,49 @@ impl App {
             x += hint.desc.len() as u16 + 2;
         }
 
-        // Right side: composer info
-        if !self.composer_info.is_empty() {
-            let info_len = self.composer_info.len() as u16;
-            let right_x = area.x + area.width.saturating_sub(info_len + 2);
+        // Right side: composer CVE warning + composer info
+        let cve_warning = if !self.composer_self_advisories.is_empty() {
+            let count = self.composer_self_advisories.len();
+            let cves: Vec<&str> = self
+                .composer_self_advisories
+                .iter()
+                .filter_map(|a| a.cve.as_deref())
+                .collect();
+            if cves.is_empty() {
+                format!("⚠ composer: {count} advisory(ies)")
+            } else {
+                format!("⚠ composer: {}", cves.join(", "))
+            }
+        } else {
+            String::new()
+        };
+
+        let right_text = if cve_warning.is_empty() {
+            self.composer_info.clone()
+        } else if self.composer_info.is_empty() {
+            cve_warning.clone()
+        } else {
+            format!("{cve_warning}  {}", self.composer_info)
+        };
+
+        if !right_text.is_empty() {
+            let right_len = right_text.len() as u16;
+            let right_x = area.x + area.width.saturating_sub(right_len + 2);
             if right_x > x {
-                buf.set_string(right_x, area.y, &self.composer_info, styles::muted_style());
+                if !cve_warning.is_empty() {
+                    let warn_len = cve_warning.len() as u16;
+                    buf.set_string(right_x, area.y, &cve_warning, styles::error_style());
+                    if !self.composer_info.is_empty() {
+                        buf.set_string(
+                            right_x + warn_len + 2,
+                            area.y,
+                            &self.composer_info,
+                            styles::muted_style(),
+                        );
+                    }
+                } else {
+                    buf.set_string(right_x, area.y, &self.composer_info, styles::muted_style());
+                }
             }
         }
     }
@@ -1275,6 +1316,15 @@ impl App {
             let version = runner.version();
             let path = runner.bin_path();
             let _ = tx.send(BgMsg::ComposerInfo { version, path });
+        });
+    }
+
+    fn spawn_self_audit(&self, version: String) {
+        let runner = self.runner.clone();
+        let tx = self.bg_tx.clone();
+        thread::spawn(move || {
+            let advisories = runner.self_audit(&version);
+            let _ = tx.send(BgMsg::ComposerSelfAudit(advisories));
         });
     }
 

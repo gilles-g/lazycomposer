@@ -146,6 +146,71 @@ pub fn version_satisfies_constraint(version: &str, constraint: &str) -> bool {
     }
 }
 
+/// Checks if a version matches a compound Packagist `affectedVersions` constraint.
+///
+/// Format: `>=2.3.0,<2.9.3|>=2.0.0,<2.2.26`
+/// - `|` separates OR groups (any group matching = affected)
+/// - `,` separates AND clauses within a group (all must match)
+/// - Supports: `>=`, `>`, `<=`, `<`, `^`, `~`, `*`, exact
+pub fn version_matches_affected(version: &str, affected: &str) -> bool {
+    let ver = match parse_version(version) {
+        Some(v) => v,
+        None => return false,
+    };
+
+    for or_group in affected.split('|') {
+        let group = or_group.trim();
+        if group.is_empty() {
+            continue;
+        }
+        let all_match = group.split(',').all(|clause| {
+            let c = clause.trim();
+            if c.is_empty() {
+                return true;
+            }
+            single_constraint_matches(ver, c)
+        });
+        if all_match {
+            return true;
+        }
+    }
+    false
+}
+
+/// Matches a single parsed version tuple against one constraint clause.
+fn single_constraint_matches(ver: (u32, u32, u32), constraint: &str) -> bool {
+    let c = constraint.trim();
+
+    if let Some(rest) = c.strip_prefix("<=") {
+        return match parse_version(rest.trim()) {
+            Some(cv) => ver <= cv,
+            None => false,
+        };
+    }
+    if let Some(rest) = c.strip_prefix('<') {
+        return match parse_version(rest.trim()) {
+            Some(cv) => ver < cv,
+            None => false,
+        };
+    }
+    if let Some(rest) = c.strip_prefix(">=") {
+        return match parse_version(rest.trim()) {
+            Some(cv) => ver >= cv,
+            None => false,
+        };
+    }
+    if let Some(rest) = c.strip_prefix('>') {
+        return match parse_version(rest.trim()) {
+            Some(cv) => ver > cv,
+            None => false,
+        };
+    }
+
+    // Delegate to existing constraint parser for ^, ~, *, exact
+    let v_str = format!("{}.{}.{}", ver.0, ver.1, ver.2);
+    version_satisfies_constraint(&v_str, c)
+}
+
 /// Returns a human-readable explanation of a Composer constraint's bounds.
 /// e.g. "^7.4" → ">=7.4.0, <8.0.0"
 pub fn explain_constraint(constraint: &str) -> String {
@@ -797,5 +862,51 @@ mod tests {
             find_best_version_in_constraint(&versions, "^7.0"),
             Some("v7.4.7".to_string())
         );
+    }
+
+    #[test]
+    fn version_matches_affected_simple_range() {
+        // >=2.0.0,<2.2.26
+        assert!(version_matches_affected("2.2.25", ">=2.0.0,<2.2.26"));
+        assert!(!version_matches_affected("2.2.26", ">=2.0.0,<2.2.26"));
+        assert!(version_matches_affected("2.0.0", ">=2.0.0,<2.2.26"));
+        assert!(!version_matches_affected("1.9.9", ">=2.0.0,<2.2.26"));
+    }
+
+    #[test]
+    fn version_matches_affected_or_groups() {
+        // >=2.3.0,<2.9.3|>=2.0.0,<2.2.26
+        let affected = ">=2.3.0,<2.9.3|>=2.0.0,<2.2.26";
+        assert!(version_matches_affected("2.5.0", affected)); // first group
+        assert!(version_matches_affected("2.1.0", affected)); // second group
+        assert!(!version_matches_affected("2.9.3", affected)); // above first group
+        assert!(!version_matches_affected("2.2.26", affected)); // above second group
+        assert!(!version_matches_affected("3.0.0", affected)); // above both
+    }
+
+    #[test]
+    fn version_matches_affected_not_affected() {
+        assert!(!version_matches_affected(
+            "2.9.5",
+            ">=2.3.0,<2.9.3|>=2.0.0,<2.2.26"
+        ));
+    }
+
+    #[test]
+    fn version_matches_affected_unparseable_version() {
+        assert!(!version_matches_affected("not-a-version", ">=2.0,<3.0"));
+    }
+
+    #[test]
+    fn version_matches_affected_empty() {
+        assert!(!version_matches_affected("2.0.0", ""));
+    }
+
+    #[test]
+    fn version_matches_affected_with_le_gt() {
+        assert!(version_matches_affected("2.0.0", "<=2.0.0"));
+        assert!(!version_matches_affected("2.0.1", "<=2.0.0"));
+        assert!(version_matches_affected("2.0.1", ">2.0.0"));
+        assert!(!version_matches_affected("2.0.0", ">2.0.0"));
     }
 }
